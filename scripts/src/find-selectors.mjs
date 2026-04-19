@@ -2,7 +2,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 
 async function findSelectors() {
-  const url = 'PASTE_YOUR_URL_HERE';
+  const url = 'https://www.pornhub.com/video/search?search=step';
 
   const { data } = await axios.get(url, {
     headers: {

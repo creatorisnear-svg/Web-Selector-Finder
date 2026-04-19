@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "hello": "tsx ./src/hello.ts",
+    "discord-bot": "node ./src/discord-bot/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
@@ -13,6 +14,7 @@
   },
   "dependencies": {
     "axios": "^1.15.0",
-    "cheerio": "^1.2.0"
+    "cheerio": "^1.2.0",
+    "discord.js": "^14.26.3"
   }
 }
