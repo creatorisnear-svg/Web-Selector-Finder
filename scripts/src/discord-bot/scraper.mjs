@@ -35,10 +35,10 @@ function getTitle(el, $) {
 }
 
 // Words found in nav/footer links — never real video titles
-const JUNK_TITLE_WORDS = /^(trust|safety|notice|terms|privacy|cookie|about|help|support|contact|legal|dmca|faq|adverti|careers|press|sitemap|accessibility|copyright|report|feedback|language|settings|sign in|log in|sign up|register|subscribe|upgrade|premium|home|back|next|prev|more|less|see all|view all|show all|load more|follow|share|embed|download|playlist|channel|community|forum|blog|news|store|shop|gift|merch)$/i;
+const JUNK_TITLE_WORDS = /^(trust|safety|notice|terms|privacy|cookie|about|help|support|contact|legal|dmca|faq|adverti|careers|press|sitemap|accessibility|copyright|report|feedback|language|settings|sign in|log in|sign up|register|subscribe|upgrade|premium|home|back|next|prev|more|less|see all|view all|show all|load more|follow|share|embed|download|playlist|channel|community|forum|blog|news|store|shop|gift|merch|gif|photo|image|album|gallery)$/i;
 
-// URL path segments to skip
-const SKIP_URL_PATTERN = /(login|signup|register|cdn\.|\.jpg|\.png|\.gif|\.webp|\/search|\/tag|\/tags|\/category|\/categories|\/channel|\/user|\/profile|\/author|\/page\/|\/feed|\/rss|javascript:|mailto:|#|\/about|\/help|\/support|\/contact|\/legal|\/privacy|\/terms|\/dmca|\/faq|\/advertise|\/careers|\/press|\/sitemap)/i;
+// URL path segments to skip — non-video pages and non-video media types
+const SKIP_URL_PATTERN = /(login|signup|register|cdn\.|\.jpg|\.jpeg|\.png|\.gif|\.webp|\.svg|\.ico|\/search|\/tag|\/tags|\/category|\/categories|\/channel|\/channels|\/user|\/users|\/profile|\/author|\/page\/|\/feed|\/rss|javascript:|mailto:|#|\/about|\/help|\/support|\/contact|\/legal|\/privacy|\/terms|\/dmca|\/faq|\/advertise|\/careers|\/press|\/sitemap|\/playlist|\/playlists|\/gif|\/gifs|\/photo|\/photos|\/image|\/images|\/album|\/albums|\/gallery|\/galleries|\/collection|\/collections)/i;
 
 // URL patterns that look like individual video pages
 const VIDEO_PATH_PATTERN = /\/(video|videos|watch|v|embed|clip|view|play|porn|tube|movie|scene)[\/-]|\/(vids?|flv|mp4)\/|\/\d{5,}/i;
