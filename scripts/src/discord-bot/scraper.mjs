@@ -343,7 +343,15 @@ export async function getVideoStreamUrl(videoPageUrl) {
     }
   }
 
-  // 5. Plain .mp4 URLs in scripts
+  // 5. xvideos HLS via html5player.setVideoHLS(...)
+  const xvHlsMatch = allScripts.match(/html5player\.setVideoHLS\s*\(\s*['"]([^'"]+)['"]\s*\)/i);
+  if (xvHlsMatch) {
+    const hlsUrl = unescapeUrl(xvHlsMatch[1]);
+    logger.info(`Found xvideos HLS URL: ${hlsUrl.slice(0, 80)}`);
+    return { url: hlsUrl, isHls: true, cookies: sessionCookies };
+  }
+
+  // 6. Plain .mp4 URLs in scripts
   const plainMp4 = /https?:\/\/[^\s"'<>\\]+\.mp4/gi;
   for (const match of (allScripts.match(plainMp4) || [])) {
     if (isThumbnailUrl(match)) continue;
