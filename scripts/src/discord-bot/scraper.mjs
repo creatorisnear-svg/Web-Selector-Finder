@@ -207,16 +207,21 @@ export async function searchVideos(searchUrlTemplate, query) {
   let results = [];
 
   if (isPornhub) {
+    // PH's own search algorithm handles relevance — title-based filtering would
+    // incorrectly drop valid results for category/tag/demographic queries like
+    // "Latina", "MILF", "BBW" where the keyword appears in tags, not titles.
     results = await searchPornhub(query);
-  } else {
-    logger.info(`Searching: ${url}`);
-    const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000 });
-    const $ = cheerio.load(data);
-    results = scrapeGeneric($, url);
+    logger.info(`Returning ${results.length} results for "${query}"`);
+    return results;
   }
 
-  // Post-filter: drop results whose titles don't contain any query word.
-  // Fall back to unfiltered if the filter is too aggressive (removes everything).
+  logger.info(`Searching: ${url}`);
+  const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000 });
+  const $ = cheerio.load(data);
+  results = scrapeGeneric($, url);
+
+  // Post-filter only for generic scraped results where we grab arbitrary links
+  // off a page and need to check relevance ourselves.
   const words = queryTokens(query);
   const relevant = results.filter(r => isRelevant(r.title, words));
   logger.info(`Relevance filter: ${results.length} → ${relevant.length} results (words: ${JSON.stringify(words)})`);
