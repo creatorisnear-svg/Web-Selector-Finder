@@ -205,8 +205,64 @@ function isRelevant(title, queryWords) {
   return queryWords.some(w => normTitle.includes(normalize(w)));
 }
 
+// ── XNXX scraper ─────────────────────────────────────────────────────────────
+async function searchXnxx(query) {
+  const searchUrl = `https://www.xnxx.com/search/videos/${encodeURIComponent(query)}`;
+  logger.info(`xnxx search: ${searchUrl}`);
+  try {
+    const { data } = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'text/html',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie': 'age_verified=1',
+      },
+      timeout: 15000
+    });
+    const $ = cheerio.load(data);
+    const seen = new Set();
+    const results = [];
+
+    $('.thumb-block, .mozaique .thumb').each((_, el) => {
+      if (results.length >= 20) return;
+      const anchor = $(el).find('a[href*="/video"]').first();
+      const href = anchor.attr('href') || '';
+      if (!href || seen.has(href)) return;
+      seen.add(href);
+      const url = href.startsWith('http') ? href : `https://www.xnxx.com${href}`;
+      const title = (
+        $(el).find('.title a, .thumb-under p a, p.title a').first().text().trim() ||
+        anchor.attr('title') || ''
+      ).replace(/\s+\d+\s*(min|sec)\s*$/, '').trim();
+      if (!title || title.length < 4) return;
+      const rawDuration = $(el).find('.metadata, .duration, [class*="duration"]').first().text().trim() || '';
+      const duration = rawDuration || null;
+      results.push({
+        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+        url,
+        duration,
+      });
+    });
+
+    logger.info(`xnxx search returned ${results.length} results`);
+    return results;
+  } catch (err) {
+    logger.error(`xnxx search failed: ${err.message}`);
+    return [];
+  }
+}
+
 // ── Public search entry point ─────────────────────────────────────────────────
-export async function searchVideos(searchUrlTemplate, query) {
+// site: 'auto' (default) | 'xnxx'
+export async function searchVideos(searchUrlTemplate, query, site = 'auto') {
+  if (site === 'xnxx') {
+    const results = await searchXnxx(query);
+    const words = queryTokens(query);
+    results.sort((a, b) => (isRelevant(a.title, words) ? 0 : 1) - (isRelevant(b.title, words) ? 0 : 1));
+    logger.info(`Returning ${results.length} xnxx results for "${query}"`);
+    return results;
+  }
+
   const url = searchUrlTemplate.replace('{query}', encodeURIComponent(query));
   const isPornhub = url.includes('pornhub.com');
 
@@ -214,8 +270,6 @@ export async function searchVideos(searchUrlTemplate, query) {
 
   if (isPornhub) {
     results = await searchPornhub(query);
-    // Sort: titles containing the query word(s) first, so the most relevant
-    // results always appear at the top of the Discord select menu.
     const words = queryTokens(query);
     results.sort((a, b) => {
       const aMatch = isRelevant(a.title, words) ? 0 : 1;

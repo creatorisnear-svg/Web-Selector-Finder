@@ -39,7 +39,7 @@ const PROXY_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.5',
   'Cookie': 'age_verified=1; ageGate=true; confirm=1',
 };
-const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com'];
+const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com'];
 
 function isAllowedUrl(raw) {
   try { return ALLOWED_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; }
@@ -280,12 +280,18 @@ healthServer.listen(PORT, () => {
 const commands = [
   new SlashCommandBuilder()
     .setName('search')
-    .setDescription('Search PornHub for videos')
+    .setDescription('Search for videos')
     .addStringOption(opt =>
-      opt
-        .setName('query')
-        .setDescription('What to search for')
-        .setRequired(true)
+      opt.setName('query').setDescription('What to search for').setRequired(true)
+    )
+    .addStringOption(opt =>
+      opt.setName('site')
+        .setDescription('Which site to search (default: Xvideos/Pornhub)')
+        .setRequired(false)
+        .addChoices(
+          { name: 'Xvideos / Pornhub (default)', value: 'auto' },
+          { name: 'XNXX', value: 'xnxx' },
+        )
     ),
 ].map(cmd => cmd.toJSON());
 
@@ -334,14 +340,15 @@ process.on('uncaughtException', (err) => {
 
 const PAGE_SIZE = 5;
 
-function buildResultsPage(results, page, key, userId) {
+function buildResultsPage(results, page, key, userId, site = 'auto') {
   const totalPages = Math.ceil(results.length / PAGE_SIZE);
   const start = page * PAGE_SIZE;
   const pageItems = results.slice(start, start + PAGE_SIZE);
+  const siteLabel = site === 'xnxx' ? 'XNXX' : 'Xvideos/Pornhub';
 
   const embed = new EmbedBuilder()
     .setTitle(`🔎 Search Results — Page ${page + 1} of ${totalPages}`)
-    .setColor(0x5865F2)
+    .setColor(site === 'xnxx' ? 0xe74c3c : 0x5865F2)
     .setDescription(
       pageItems.map((r, i) => {
         const num = start + i + 1;
@@ -349,7 +356,7 @@ function buildResultsPage(results, page, key, userId) {
         return `**${num}.** ${r.title}${dur}`;
       }).join('\n\n')
     )
-    .setFooter({ text: `${results.length} videos found • Pick a number or use the arrows to browse` });
+    .setFooter({ text: `${results.length} videos from ${siteLabel} • Pick a number or browse` });
 
   const selectRow = new ActionRowBuilder().addComponents(
     pageItems.map((_, i) =>
@@ -363,14 +370,18 @@ function buildResultsPage(results, page, key, userId) {
   const navRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`nav:${userId}:${key}:${page - 1}`)
-      .setLabel('◀ Previous')
+      .setLabel('◀ Prev')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(page === 0),
     new ButtonBuilder()
       .setCustomId(`nav:${userId}:${key}:${page + 1}`)
       .setLabel('Next ▶')
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page >= totalPages - 1)
+      .setDisabled(page >= totalPages - 1),
+    new ButtonBuilder()
+      .setCustomId(`ref:${userId}:${key}`)
+      .setLabel('🔄 Refresh')
+      .setStyle(ButtonStyle.Success)
   );
 
   return { embeds: [embed], components: [selectRow, navRow] };
@@ -432,6 +443,11 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
   }
 }
 
+async function runSearch(query, site) {
+  const results = await searchVideos(SEARCH_URL, query, site);
+  return results ? results.slice(0, 20) : [];
+}
+
 async function handleInteraction(interaction) {
   if (Date.now() - interaction.createdTimestamp > 2500) {
     logger.warn(`Dropping stale interaction (${Date.now() - interaction.createdTimestamp}ms old)`);
@@ -445,7 +461,8 @@ async function handleInteraction(interaction) {
 
     if (commandName === 'search') {
       const query = interaction.options.getString('query');
-      logger.info(`Search query: "${query}"`);
+      const site = interaction.options.getString('site') || 'auto';
+      logger.info(`Search query: "${query}" site: ${site}`);
       try {
         await interaction.deferReply();
       } catch (err) {
@@ -456,27 +473,26 @@ async function handleInteraction(interaction) {
         throw err;
       }
 
-      let results;
+      let top20;
       try {
-        results = await searchVideos(SEARCH_URL, query);
+        top20 = await runSearch(query, site);
       } catch (err) {
         logger.error('Scrape error:', err.message);
         await interaction.editReply(`❌ Could not fetch results: ${err.message}`);
         return;
       }
 
-      if (!results || results.length === 0) {
+      if (!top20 || top20.length === 0) {
         logger.warn(`No results found for query: "${query}"`);
         await interaction.editReply(`❌ No results found for **${query}**. Try a different search term.`);
         return;
       }
 
-      const top20 = results.slice(0, 20);
       const key = `${interaction.user.id}-${Date.now()}`;
-      pendingResults.set(key, top20);
+      pendingResults.set(key, { results: top20, query, site });
       setTimeout(() => pendingResults.delete(key), 5 * 60 * 1000);
 
-      await interaction.editReply(buildResultsPage(top20, 0, key, interaction.user.id));
+      await interaction.editReply(buildResultsPage(top20, 0, key, interaction.user.id, site));
     }
   }
 
@@ -485,7 +501,7 @@ async function handleInteraction(interaction) {
     const parts = interaction.customId.split(':');
     const [type, userId, key] = parts;
 
-    if (type !== 'sel' && type !== 'nav') return;
+    if (!['sel', 'nav', 'ref'].includes(type)) return;
 
     if (interaction.user.id !== userId) {
       await interaction.reply({
@@ -495,15 +511,17 @@ async function handleInteraction(interaction) {
       return;
     }
 
-    const results = pendingResults.get(key);
-    if (!results) {
+    const stored = pendingResults.get(key);
+    if (!stored) {
       await interaction.update({ content: '❌ This search has expired. Run `/search` again.', embeds: [], components: [] });
       return;
     }
 
+    const { results, query, site } = stored;
+
     if (type === 'nav') {
       const page = parseInt(parts[3], 10);
-      await interaction.update(buildResultsPage(results, page, key, userId));
+      await interaction.update(buildResultsPage(results, page, key, userId, site));
       return;
     }
 
@@ -513,6 +531,28 @@ async function handleInteraction(interaction) {
       pendingResults.delete(key);
       logger.info(`User ${interaction.user.tag} picked: "${picked.title}" — ${picked.url}`);
       await handleVideoFetch(interaction, picked, true);
+      return;
+    }
+
+    if (type === 'ref') {
+      await interaction.update({ content: '🔄 Refreshing results...', embeds: [], components: [] });
+      let fresh;
+      try {
+        fresh = await runSearch(query, site);
+      } catch (err) {
+        logger.error('Refresh scrape error:', err.message);
+        await interaction.editReply({ content: '❌ Refresh failed. Try `/search` again.', embeds: [], components: [] });
+        return;
+      }
+      if (!fresh || fresh.length === 0) {
+        await interaction.editReply({ content: `❌ No results on refresh for **${query}**.`, embeds: [], components: [] });
+        return;
+      }
+      const newKey = `${userId}-${Date.now()}`;
+      pendingResults.delete(key);
+      pendingResults.set(newKey, { results: fresh, query, site });
+      setTimeout(() => pendingResults.delete(newKey), 5 * 60 * 1000);
+      await interaction.editReply(buildResultsPage(fresh, 0, newKey, userId, site));
     }
   }
 }
