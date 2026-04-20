@@ -27,50 +27,24 @@ function resolveUrl(href, baseUrl) {
   return null;
 }
 
-// ── PornHub-specific search scraper ──────────────────────────────────────────
-// Scoped strictly to #videoSearchResult to avoid picking up sidebar/recommended videos.
-function scrapePornhub($, pageUrl) {
-  const results = [];
-  const seen = new Set();
-
-  // Only look inside the search result container, not the whole page
-  const searchContainer = $('#videoSearchResult');
-  if (searchContainer.length === 0) {
-    logger.warn('PH: #videoSearchResult container not found');
-    return results;
-  }
-
-  // Real search result items have class "videoBoxesSearch".
-  // Sponsored/promoted slots use different classes (tjListItem, sniperModeEngaged, etc.) — skip them.
-  searchContainer.find('li.videoBoxesSearch').each((_, li) => {
-    if (results.length >= 10) return;
-
-    // The thumbnail anchor has the viewkey URL and the title as an attribute
-    const anchor = $(li).find('a[href*="viewkey"]').first();
-    const href = anchor.attr('href');
-    if (!href || seen.has(href)) return;
-    seen.add(href);
-
-    const fullUrl = resolveUrl(href, pageUrl);
-    if (!fullUrl) return;
-
-    // Title is reliably on the anchor's title attribute; fall back to .title span text
-    const title = (
-      anchor.attr('title') ||
-      $(li).find('.title a').first().text().trim() ||
-      $(li).find('span.title').first().text().trim()
-    )?.trim();
-
-    if (!title || title.length < 4) return;
-
-    results.push({
-      title: title.length > 80 ? title.slice(0, 77) + '...' : title,
-      url: fullUrl
-    });
+// ── PornHub WebMasters API search ─────────────────────────────────────────────
+// Uses PH's official API endpoint — returns clean JSON, no bot detection issues.
+// Fetches 30 results so the relevance filter has enough to pick 10 good ones from.
+async function searchPornhub(query) {
+  const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=${encodeURIComponent(query)}&page=1&per_page=30&ordering=mostviewed&period=alltime`;
+  logger.info(`PH API: ${apiUrl}`);
+  const res = await axios.get(apiUrl, {
+    headers: { 'Accept': 'application/json', 'User-Agent': HEADERS['User-Agent'] },
+    timeout: 15000
   });
-
-  logger.info(`PH-specific scraper found ${results.length} results from #videoSearchResult`);
-  return results;
+  const videos = res.data?.videos || [];
+  logger.info(`PH API returned ${videos.length} videos`);
+  return videos
+    .filter(v => v.url && v.title)
+    .map(v => ({
+      title: v.title.length > 80 ? v.title.slice(0, 77) + '...' : v.title,
+      url: v.url
+    }));
 }
 
 // ── Generic fallback scraper ──────────────────────────────────────────────────
@@ -167,16 +141,16 @@ function isRelevant(title, queryWords) {
 // ── Public search entry point ─────────────────────────────────────────────────
 export async function searchVideos(searchUrlTemplate, query) {
   const url = searchUrlTemplate.replace('{query}', encodeURIComponent(query));
-  logger.info(`Searching: ${url}`);
-
-  const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000 });
-  const $ = cheerio.load(data);
-
   const isPornhub = url.includes('pornhub.com');
-  let results = isPornhub ? scrapePornhub($, url) : [];
 
-  if (results.length === 0) {
-    logger.info('Falling back to generic scraper');
+  let results = [];
+
+  if (isPornhub) {
+    results = await searchPornhub(query);
+  } else {
+    logger.info(`Searching: ${url}`);
+    const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000 });
+    const $ = cheerio.load(data);
     results = scrapeGeneric($, url);
   }
 
@@ -275,7 +249,13 @@ export async function getVideoStreamUrl(videoPageUrl) {
 
       const hlsDefs = defs.filter(d => d.format === 'hls' && d.videoUrl);
       const qualityOrder = ['480', '240', '360', '720', '1080'];
+      // Prefer iv-h CDN over ev-h (ev-h CDN blocks some server IPs)
+      const cdnPrefer = (url) => url.includes('ev-h.') ? 1 : 0;
       hlsDefs.sort((a, b) => {
+        const aUrl = unescapeUrl(a.videoUrl);
+        const bUrl = unescapeUrl(b.videoUrl);
+        const cdnDiff = cdnPrefer(aUrl) - cdnPrefer(bUrl);
+        if (cdnDiff !== 0) return cdnDiff;
         const ai = qualityOrder.findIndex(q => String(a.quality).includes(q));
         const bi = qualityOrder.findIndex(q => String(b.quality).includes(q));
         return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);

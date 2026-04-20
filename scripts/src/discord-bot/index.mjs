@@ -109,7 +109,15 @@ async function handleInteraction(interaction) {
     if (commandName === 'search') {
       const query = interaction.options.getString('query');
       logger.info(`Search query: "${query}"`);
-      await interaction.deferReply();
+      try {
+        await interaction.deferReply();
+      } catch (err) {
+        if (err.code === 10062) {
+          logger.warn('Stale interaction token on deferReply — user should retry');
+          return;
+        }
+        throw err;
+      }
 
       let results;
       try {
