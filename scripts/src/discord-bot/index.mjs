@@ -585,7 +585,8 @@ async function handleInteraction(interaction) {
     }
 
     if (type === 'ref') {
-      await interaction.update({ content: '🔄 Refreshing results...', embeds: [], components: [] });
+      // deferUpdate holds the interaction open (up to 15 min) so editReply works after async work.
+      await interaction.deferUpdate();
       let fresh;
       try {
         fresh = await runSearch(query, site);
