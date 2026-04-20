@@ -4,7 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { stat, unlink } from 'fs/promises';
+import { stat, unlink, readFile, mkdtemp, readdir } from 'fs/promises';
 import { logger } from './logger.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -65,46 +65,67 @@ async function searchPornhub(query) {
 }
 
 async function searchPornhubViaYtdlp(query) {
+  // yt-dlp's PornHub extractor ignores the ?search= param and returns trending/recommended
+  // content instead of actual search results. Instead we use yt-dlp only as a TLS-capable
+  // fetcher (--write-pages) to bypass Cloudflare, then parse #videoSearchResult ourselves.
   const searchUrl = `https://www.pornhub.com/video/search?search=${encodeURIComponent(query)}`;
-  logger.info(`yt-dlp search: ${searchUrl}`);
+  logger.info(`yt-dlp page fetch: ${searchUrl}`);
+  const tmpDir = await mkdtemp(join(tmpdir(), 'ph_search_'));
   try {
-    const { stdout } = await execFileAsync(
+    await execFileAsync(
       YTDLP_BIN,
       [
         '--flat-playlist',
-        '--print', '%(title)s\t%(webpage_url)s',
+        '--write-pages',
+        '--skip-download',
+        '--playlist-end', '1',
         '--no-warnings',
         '--quiet',
         '--impersonate', 'chrome',
         '--add-header', 'Cookie:age_verified=1; ageGate=true; confirm=1',
         searchUrl
       ],
-      { timeout: 45000 }
+      { cwd: tmpDir, timeout: 45000 }
     );
-    const decodeHtml = s => s
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#039;/g, "'")
-      .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
-    const results = stdout.trim().split('\n').filter(Boolean).map(line => {
-      const tab = line.indexOf('\t');
-      if (tab === -1) return null;
-      const title = decodeHtml(line.slice(0, tab).trim());
-      let url = line.slice(tab + 1).trim();
-      // Normalize relative or viewkey-only URLs
-      if (url && !url.startsWith('http')) {
-        url = url.startsWith('/') ? `https://www.pornhub.com${url}` : null;
-      }
-      if (!title || !url) return null;
-      return { title: title.length > 80 ? title.slice(0, 77) + '...' : title, url };
-    }).filter(Boolean);
-    logger.info(`yt-dlp search returned ${results.length} results`);
+
+    // Find the .dump file yt-dlp wrote
+    const files = await readdir(tmpDir);
+    const dumpFile = files.find(f => f.endsWith('.dump'));
+    if (!dumpFile) {
+      logger.warn('yt-dlp page fetch: no dump file produced');
+      return [];
+    }
+    const html = await readFile(join(tmpDir, dumpFile), 'utf8');
+
+    // Parse using Cheerio, scoped to #videoSearchResult only
+    const $ = cheerio.load(html);
+    const seen = new Set();
+    const results = [];
+    $('#videoSearchResult a[href*="viewkey"][title]').each((_, el) => {
+      const rawTitle = $(el).attr('title') || '';
+      const href = $(el).attr('href') || '';
+      if (!rawTitle || !href || seen.has(href)) return;
+      seen.add(href);
+      const title = rawTitle
+        .replace(/&#039;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
+      const url = href.startsWith('http') ? href : `https://www.pornhub.com${href}`;
+      if (!title || !url) return;
+      results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url });
+    });
+
+    logger.info(`yt-dlp page scrape found ${results.length} search results`);
     return results;
   } catch (err) {
     logger.error(`yt-dlp search failed: ${(err.stderr || err.message || '').slice(0, 200)}`);
     return [];
+  } finally {
+    // Clean up temp files
+    try {
+      const files = await readdir(tmpDir);
+      await Promise.all(files.map(f => unlink(join(tmpDir, f)).catch(() => {})));
+      await import('fs/promises').then(m => m.rmdir(tmpDir)).catch(() => {});
+    } catch {}
   }
 }
 
@@ -207,10 +228,15 @@ export async function searchVideos(searchUrlTemplate, query) {
   let results = [];
 
   if (isPornhub) {
-    // PH's own search algorithm handles relevance — title-based filtering would
-    // incorrectly drop valid results for category/tag/demographic queries like
-    // "Latina", "MILF", "BBW" where the keyword appears in tags, not titles.
     results = await searchPornhub(query);
+    // Sort: titles containing the query word(s) first, so the most relevant
+    // results always appear at the top of the Discord select menu.
+    const words = queryTokens(query);
+    results.sort((a, b) => {
+      const aMatch = isRelevant(a.title, words) ? 0 : 1;
+      const bMatch = isRelevant(b.title, words) ? 0 : 1;
+      return aMatch - bMatch;
+    });
     logger.info(`Returning ${results.length} results for "${query}"`);
     return results;
   }
