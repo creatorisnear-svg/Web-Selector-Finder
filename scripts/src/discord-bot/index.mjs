@@ -136,22 +136,29 @@ async function handleStreamProxy(req, res) {
     return;
   }
 
-  // Direct MP4 proxy
+  // Direct MP4 proxy — forward range requests so seeking works
   try {
-    const upRes = await fetchUpstream(raw, extra);
+    const rangeHeader = req.headers['range'];
+    const upHeaders = { ...extra };
+    if (rangeHeader) upHeaders['Range'] = rangeHeader;
+
+    const upRes = await fetchUpstream(raw, upHeaders);
     if (upRes.statusCode >= 400) {
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: `Upstream ${upRes.statusCode}` }));
       upRes.resume();
       return;
     }
+    const statusCode = rangeHeader && upRes.statusCode === 206 ? 206 : 200;
     const headers = {
-      'Content-Type': 'video/mp4',
+      'Content-Type': upRes.headers['content-type'] || 'video/mp4',
       'Content-Disposition': 'inline; filename="video.mp4"',
       'Cache-Control': 'no-store',
+      'Accept-Ranges': 'bytes',
     };
     if (upRes.headers['content-length']) headers['Content-Length'] = upRes.headers['content-length'];
-    res.writeHead(upRes.statusCode || 200, headers);
+    if (upRes.headers['content-range']) headers['Content-Range'] = upRes.headers['content-range'];
+    res.writeHead(statusCode, headers);
     upRes.pipe(res);
     req.on('close', () => upRes.destroy());
   } catch (err) {
@@ -191,7 +198,7 @@ async function handleVideoStream(req, res) {
       'Content-Type': 'video/mp4',
       'Content-Disposition': 'inline; filename="video.mp4"',
       'Cache-Control': 'no-store',
-      'Transfer-Encoding': 'chunked',
+      'Accept-Ranges': 'none',
     });
 
     const ffHeaders = [
@@ -203,7 +210,6 @@ async function handleVideoStream(req, res) {
     const ff = spawn('ffmpeg', [
       '-headers', ffHeaders,
       '-i', raw,
-      '-t', '75',
       '-c:v', 'copy',
       '-c:a', 'copy',
       '-bsf:a', 'aac_adtstoasc',
@@ -221,15 +227,28 @@ async function handleVideoStream(req, res) {
     return;
   }
 
-  // Direct MP4
+  // Direct MP4 — support byte-range requests so Discord's player can seek
   try {
-    const upRes = await fetchUpstream(raw, extra);
+    const rangeHeader = req.headers['range'];
+    const upHeaders = { ...extra };
+    if (rangeHeader) upHeaders['Range'] = rangeHeader;
+
+    const upRes = await fetchUpstream(raw, upHeaders);
     if (upRes.statusCode >= 400) {
       res.writeHead(502); res.end(); upRes.resume(); return;
     }
-    const headers = { 'Content-Type': 'video/mp4', 'Content-Disposition': 'inline; filename="video.mp4"', 'Cache-Control': 'no-store' };
+
+    const statusCode = rangeHeader && upRes.statusCode === 206 ? 206 : 200;
+    const headers = {
+      'Content-Type': upRes.headers['content-type'] || 'video/mp4',
+      'Content-Disposition': 'inline; filename="video.mp4"',
+      'Cache-Control': 'no-store',
+      'Accept-Ranges': 'bytes',
+    };
     if (upRes.headers['content-length']) headers['Content-Length'] = upRes.headers['content-length'];
-    res.writeHead(upRes.statusCode || 200, headers);
+    if (upRes.headers['content-range']) headers['Content-Range'] = upRes.headers['content-range'];
+
+    res.writeHead(statusCode, headers);
     upRes.pipe(res);
     req.on('close', () => upRes.destroy());
   } catch (err) {
