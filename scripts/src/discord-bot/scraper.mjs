@@ -498,22 +498,39 @@ async function downloadWithYtDlp(videoPageUrl, cookies = '') {
     if (size > 0) {
       logger.info(`yt-dlp success: ${(size / 1024 / 1024).toFixed(1)}MB`);
       if (size <= DISCORD_LIMIT) return tmpMp4;
-      // File too large — trim to ~60s clip that fits under 8MB
-      const trimmedPath = join(tmpdir(), `discord_ytdlp_${timestamp}_trim.mp4`);
-      logger.info(`File too large (${(size / 1024 / 1024).toFixed(1)}MB), trimming to 60s...`);
+      // File too large — re-encode to fit under 8MB
+      const reencPath = join(tmpdir(), `discord_ytdlp_${timestamp}_reenc.mp4`);
+      logger.info(`File too large (${(size / 1024 / 1024).toFixed(1)}MB), re-encoding to fit 8MB...`);
       try {
+        // Get duration via ffprobe
+        const { stdout: probeOut } = await execFileAsync('ffprobe', [
+          '-v', 'error', '-show_entries', 'format=duration',
+          '-of', 'default=noprint_wrappers=1:nokey=1', tmpMp4
+        ], { timeout: 10000 });
+        const duration = parseFloat(probeOut.trim());
+        // Cap duration at 90s to keep encode fast and clip watchable
+        const targetDuration = Math.min(duration, 90);
+        // Target 7.5MB, reserve 128kbps for audio, rest for video
+        const targetTotalKbps = Math.floor((7.5 * 8 * 1024) / targetDuration);
+        const audioBitrateKbps = 96;
+        const videoBitrateKbps = Math.max(100, targetTotalKbps - audioBitrateKbps);
+        logger.info(`Re-encoding: duration=${targetDuration.toFixed(1)}s video=${videoBitrateKbps}kbps audio=${audioBitrateKbps}kbps`);
         await execFileAsync('ffmpeg', [
-          '-y', '-i', tmpMp4, '-t', '60',
-          '-c', 'copy', '-movflags', '+faststart',
-          '-loglevel', 'error', trimmedPath
-        ], { timeout: 30000 });
-        const { size: trimSize } = await stat(trimmedPath);
-        logger.info(`Trimmed to ${(trimSize / 1024 / 1024).toFixed(1)}MB`);
+          '-y', '-i', tmpMp4,
+          '-t', String(targetDuration),
+          '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+          '-c:v', 'libx264', '-b:v', `${videoBitrateKbps}k`, '-preset', 'fast',
+          '-c:a', 'aac', '-b:a', `${audioBitrateKbps}k`,
+          '-movflags', '+faststart',
+          '-loglevel', 'error', reencPath
+        ], { timeout: 120000 });
+        const { size: reencSize } = await stat(reencPath);
+        logger.info(`Re-encoded to ${(reencSize / 1024 / 1024).toFixed(1)}MB`);
         try { await unlink(tmpMp4); } catch {}
-        if (trimSize > 0 && trimSize <= DISCORD_LIMIT) return trimmedPath;
-        try { await unlink(trimmedPath); } catch {}
-      } catch (trimErr) {
-        logger.error('Trim failed:', trimErr.message);
+        if (reencSize > 0 && reencSize <= DISCORD_LIMIT) return reencPath;
+        try { await unlink(reencPath); } catch {}
+      } catch (reencErr) {
+        logger.error('Re-encode failed:', reencErr.message);
         try { await unlink(tmpMp4); } catch {}
       }
       return null;
