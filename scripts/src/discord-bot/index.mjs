@@ -66,23 +66,20 @@ async function handleStreamProxy(req, res) {
     return;
   }
 
-  // Discord's unfurler sends a HEAD or GET with "Discordbot" user-agent.
-  // Return an OG-tag HTML page so Discord shows an inline video embed.
+  // Discord's unfurler sends HEAD/GET with "Discordbot" UA.
+  // Serve OG-tag HTML so Discord renders an inline embed.
+  // The og:video points to /api/stream/play/video.mp4 which ALWAYS streams (never returns HTML).
   const ua = req.headers['user-agent'] || '';
   const isUnfurler = ua.includes('Discordbot') || ua.includes('Twitterbot') || ua.includes('facebookexternalhit') || req.method === 'HEAD';
   if (isUnfurler) {
-    const streamUrl = `${process.env.STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(raw)}&ref=${encodeURIComponent(ref || '')}`;
+    const playUrl = `${process.env.STREAM_BASE_URL}/api/stream/play/video.mp4?url=${encodeURIComponent(raw)}&ref=${encodeURIComponent(ref || '')}`;
     const html = `<!DOCTYPE html><html><head>
 <meta property="og:type" content="video.other"/>
-<meta property="og:video" content="${streamUrl}"/>
-<meta property="og:video:secure_url" content="${streamUrl}"/>
+<meta property="og:video" content="${playUrl}"/>
+<meta property="og:video:secure_url" content="${playUrl}"/>
 <meta property="og:video:type" content="video/mp4"/>
 <meta property="og:video:width" content="1280"/>
 <meta property="og:video:height" content="720"/>
-<meta property="twitter:card" content="player"/>
-<meta property="twitter:player" content="${streamUrl}"/>
-<meta property="twitter:player:width" content="1280"/>
-<meta property="twitter:player:height" content="720"/>
 </head><body></body></html>`;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(html);
@@ -166,12 +163,90 @@ async function handleStreamProxy(req, res) {
   }
 }
 
+// Always streams video — used by the og:video URL so Discord's player gets real data
+async function handleVideoStream(req, res) {
+  const reqUrl = new URL(req.url, 'http://localhost');
+  const raw = reqUrl.searchParams.get('url');
+  const ref = reqUrl.searchParams.get('ref');
+
+  if (!raw || !isAllowedUrl(raw)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Missing or disallowed url' }));
+    return;
+  }
+
+  const extra = {};
+  if (ref) {
+    try {
+      const o = new URL(ref);
+      extra['Referer'] = ref;
+      extra['Origin'] = `${o.protocol}//${o.host}`;
+    } catch {}
+  }
+
+  const isHls = raw.includes('.m3u8') || raw.includes('/hls');
+
+  if (isHls) {
+    res.writeHead(200, {
+      'Content-Type': 'video/mp4',
+      'Content-Disposition': 'inline; filename="video.mp4"',
+      'Cache-Control': 'no-store',
+      'Transfer-Encoding': 'chunked',
+    });
+
+    const ffHeaders = [
+      `User-Agent: ${PROXY_HEADERS['User-Agent']}`,
+      `Cookie: ${PROXY_HEADERS['Cookie']}`,
+      extra['Referer'] ? `Referer: ${extra['Referer']}` : '',
+    ].filter(Boolean).join('\r\n') + '\r\n';
+
+    const ff = spawn('ffmpeg', [
+      '-headers', ffHeaders,
+      '-i', raw,
+      '-t', '75',
+      '-c:v', 'copy',
+      '-c:a', 'copy',
+      '-bsf:a', 'aac_adtstoasc',
+      '-f', 'mp4',
+      '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+      '-loglevel', 'error',
+      'pipe:1',
+    ]);
+
+    ff.stdout.pipe(res);
+    ff.stderr.on('data', d => logger.warn('ffmpeg stderr:', d.toString().slice(0, 200)));
+    ff.on('error', err => { logger.error('ffmpeg error:', err.message); if (!res.writableEnded) res.end(); });
+    ff.on('close', () => { if (!res.writableEnded) res.end(); });
+    req.on('close', () => ff.kill('SIGTERM'));
+    return;
+  }
+
+  // Direct MP4
+  try {
+    const upRes = await fetchUpstream(raw, extra);
+    if (upRes.statusCode >= 400) {
+      res.writeHead(502); res.end(); upRes.resume(); return;
+    }
+    const headers = { 'Content-Type': 'video/mp4', 'Content-Disposition': 'inline; filename="video.mp4"', 'Cache-Control': 'no-store' };
+    if (upRes.headers['content-length']) headers['Content-Length'] = upRes.headers['content-length'];
+    res.writeHead(upRes.statusCode || 200, headers);
+    upRes.pipe(res);
+    req.on('close', () => upRes.destroy());
+  } catch (err) {
+    logger.error('MP4 stream error:', err.message);
+    if (!res.headersSent) { res.writeHead(502); res.end(); }
+  }
+}
+
 // ── HTTP server: health check + stream proxy ──────────────────────────────────
 const PORT = parseInt(process.env.PORT || '5000', 10);
 const healthServer = http.createServer(async (req, res) => {
   const path = (req.url || '/').split('?')[0];
   if (path === '/api/stream/video.mp4') {
     await handleStreamProxy(req, res);
+  } else if (path === '/api/stream/play/video.mp4') {
+    // Always stream — never return HTML regardless of user-agent
+    await handleVideoStream(req, res);
   } else {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('OK');
