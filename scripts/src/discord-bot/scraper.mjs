@@ -34,6 +34,26 @@ function getTitle(el, $) {
   return null;
 }
 
+// Words found in nav/footer links — never real video titles
+const JUNK_TITLE_WORDS = /^(trust|safety|notice|terms|privacy|cookie|about|help|support|contact|legal|dmca|faq|adverti|careers|press|sitemap|accessibility|copyright|report|feedback|language|settings|sign in|log in|sign up|register|subscribe|upgrade|premium|home|back|next|prev|more|less|see all|view all|show all|load more|follow|share|embed|download|playlist|channel|community|forum|blog|news|store|shop|gift|merch)$/i;
+
+// URL path segments to skip
+const SKIP_URL_PATTERN = /(login|signup|register|cdn\.|\.jpg|\.png|\.gif|\.webp|\/search|\/tag|\/tags|\/category|\/categories|\/channel|\/user|\/profile|\/author|\/page\/|\/feed|\/rss|javascript:|mailto:|#|\/about|\/help|\/support|\/contact|\/legal|\/privacy|\/terms|\/dmca|\/faq|\/advertise|\/careers|\/press|\/sitemap)/i;
+
+// URL patterns that look like individual video pages
+const VIDEO_PATH_PATTERN = /\/(video|videos|watch|v|embed|clip|view|play|porn|tube|movie|scene)[\/-]|\/(vids?|flv|mp4)\/|\/\d{5,}/i;
+
+function isJunkTitle(title) {
+  if (!title) return true;
+  const t = title.trim();
+  if (t.length < 5) return true;
+  if (t.length > 200) return true; // suspiciously long = probably grabbed wrong element
+  if (JUNK_TITLE_WORDS.test(t)) return true;
+  // All uppercase short strings are usually buttons/labels
+  if (t.length < 20 && t === t.toUpperCase()) return true;
+  return false;
+}
+
 export async function searchVideos(searchUrlTemplate, query) {
   const url = searchUrlTemplate.replace('{query}', encodeURIComponent(query));
   console.log('Fetching:', url);
@@ -44,25 +64,19 @@ export async function searchVideos(searchUrlTemplate, query) {
   const results = [];
   const seenHrefs = new Set();
 
-  // Patterns that typically indicate a single video page URL
-  const videoPathPattern = /\/(video|watch|v|embed|clip|view)[\/-]|\/\d{5,}/i;
-
-  // Patterns to skip
-  const skipPattern = /(login|signup|register|cdn\.|\.jpg|\.png|\.gif|\.webp|\/search|\/tag|\/category|\/channel|\/user|\/profile|javascript:|mailto:|#)/i;
-
   $('a[href]').each((i, el) => {
     if (results.length >= 10) return;
 
     const href = $(el).attr('href');
     if (!href || seenHrefs.has(href)) return;
-    if (skipPattern.test(href)) return;
-    if (!videoPathPattern.test(href)) return;
+    if (SKIP_URL_PATTERN.test(href)) return;
+    if (!VIDEO_PATH_PATTERN.test(href)) return;
 
     const fullUrl = resolveUrl(href, url);
     if (!fullUrl) return;
 
     const title = getTitle(el, $);
-    if (!title) return;
+    if (isJunkTitle(title)) return;
 
     seenHrefs.add(href);
     results.push({
@@ -71,7 +85,7 @@ export async function searchVideos(searchUrlTemplate, query) {
     });
   });
 
-  // If strict matching found nothing, fall back to a wider net
+  // Fallback: wider net, but stricter title filter
   if (results.length === 0) {
     console.log('Strict match found nothing — trying wider search');
     $('a[href]').each((i, el) => {
@@ -79,9 +93,7 @@ export async function searchVideos(searchUrlTemplate, query) {
 
       const href = $(el).attr('href');
       if (!href || seenHrefs.has(href)) return;
-      if (skipPattern.test(href)) return;
-
-      // Must be an absolute or root-relative path with some depth
+      if (SKIP_URL_PATTERN.test(href)) return;
       if (!href.startsWith('/') && !href.startsWith('http')) return;
       if (href === '/' || href.split('/').filter(Boolean).length < 2) return;
 
@@ -89,7 +101,9 @@ export async function searchVideos(searchUrlTemplate, query) {
       if (!fullUrl) return;
 
       const title = getTitle(el, $);
-      if (!title || title.length < 5) return;
+      if (isJunkTitle(title)) return;
+      // In fallback, require longer title to reduce noise
+      if (title.length < 10) return;
 
       seenHrefs.add(href);
       results.push({
@@ -128,8 +142,8 @@ export async function getDirectMp4(videoPageUrl) {
     $('meta[property="og:video"]').attr('content');
   if (ogVideo && ogVideo.includes('.mp4')) return ogVideo;
 
-  // 3. Scan all script tag text for .mp4 URLs
-  const mp4Pattern = /https?:[^"'\s,)]+\.mp4[^"'\s,)]*/gi;
+  // 3. Scan script tags for .mp4 URLs, prefer higher quality
+  const mp4Pattern = /https?:[^"'\s,)\\]+\.mp4[^"'\s,)\\]*/gi;
   let bestMp4 = null;
   let bestScore = -1;
 
@@ -137,7 +151,6 @@ export async function getDirectMp4(videoPageUrl) {
     const text = $(el).html() || '';
     const matches = text.match(mp4Pattern) || [];
     for (const match of matches) {
-      // Prefer higher quality: look for "1080", "720", "480", "hd" in URL
       let score = 0;
       if (match.includes('1080')) score = 4;
       else if (match.includes('720')) score = 3;
@@ -154,7 +167,7 @@ export async function getDirectMp4(videoPageUrl) {
 
   if (bestMp4) return bestMp4;
 
-  // 4. Scan raw HTML for .mp4 URLs as a last resort
+  // 4. Scan raw HTML as last resort
   const rawMatches = data.match(mp4Pattern);
   if (rawMatches && rawMatches.length > 0) return rawMatches[0];
 

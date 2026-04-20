@@ -23,7 +23,6 @@ if (!TOKEN || !CLIENT_ID) {
 const guildSettings = new Map();
 
 // Temporary search results store: key -> results array
-// key = `${userId}-${timestamp}`
 const pendingResults = new Map();
 
 const commands = [
@@ -65,8 +64,25 @@ client.once('clientReady', () => {
   console.log(`Bot is online as ${client.user.tag}`);
 });
 
+// Wrap the whole handler so one bad interaction never crashes the bot
 client.on('interactionCreate', async interaction => {
+  try {
+    await handleInteraction(interaction);
+  } catch (err) {
+    console.error('Interaction error:', err.message);
+    // Attempt to tell the user something went wrong (best-effort)
+    try {
+      const msg = { content: '❌ Something went wrong. Please try again.', flags: MessageFlags.Ephemeral };
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(msg);
+      } else {
+        await interaction.reply(msg);
+      }
+    } catch (_) {}
+  }
+});
 
+async function handleInteraction(interaction) {
   // ── Slash commands ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand()) {
     const { commandName, guildId } = interaction;
@@ -123,10 +139,8 @@ client.on('interactionCreate', async interaction => {
 
       const top10 = results.slice(0, 10);
 
-      // Store results so we can look up the full URL by index later
       const key = `${interaction.user.id}-${Date.now()}`;
       pendingResults.set(key, top10);
-      // Auto-clean after 5 minutes
       setTimeout(() => pendingResults.delete(key), 5 * 60 * 1000);
 
       const select = new StringSelectMenuBuilder()
@@ -175,16 +189,13 @@ client.on('interactionCreate', async interaction => {
 
     const index = parseInt(interaction.values[0], 10);
     const picked = results[index];
-
     pendingResults.delete(key);
 
-    // Acknowledge the pick immediately so Discord doesn't time out
     await interaction.update({
       content: `⏳ Finding the video file for **${picked.title}**...`,
       components: []
     });
 
-    // Try to extract a direct .mp4 URL from the video page
     const mp4Url = await getDirectMp4(picked.url);
 
     if (mp4Url) {
@@ -192,13 +203,12 @@ client.on('interactionCreate', async interaction => {
         content: `🎬 **${picked.title}**\n${mp4Url}`
       });
     } else {
-      // Fall back to the page link if no mp4 found
       await interaction.editReply({
         content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Could not find a direct video file — this site may load videos with JavaScript. The link above will open the page.`
       });
     }
   }
-});
+}
 
 await registerCommands();
 client.login(TOKEN);
