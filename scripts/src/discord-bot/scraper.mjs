@@ -4,7 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { stat, unlink, readFile, mkdtemp, readdir } from 'fs/promises';
+import { stat, unlink, readFile, writeFile, mkdtemp, readdir } from 'fs/promises';
 import { logger } from './logger.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -64,6 +64,15 @@ async function searchPornhub(query) {
   return searchPornhubViaYtdlp(query);
 }
 
+// Netscape-format cookie file content for PH — passes age gate and disables region redirects.
+const PH_COOKIE_FILE_CONTENT = [
+  '# Netscape HTTP Cookie File',
+  '.pornhub.com\tTRUE\t/\tFALSE\t0\tage_verified\t1',
+  '.pornhub.com\tTRUE\t/\tFALSE\t0\tageGate\ttrue',
+  '.pornhub.com\tTRUE\t/\tFALSE\t0\tconfirm\t1',
+  '.pornhub.com\tTRUE\t/\tFALSE\t0\tplatform\tpc',
+].join('\n') + '\n';
+
 async function searchPornhubViaYtdlp(query) {
   // yt-dlp's PornHub extractor ignores the ?search= param and returns trending/recommended
   // content instead of actual search results. Instead we use yt-dlp only as a TLS-capable
@@ -71,7 +80,10 @@ async function searchPornhubViaYtdlp(query) {
   const searchUrl = `https://www.pornhub.com/video/search?search=${encodeURIComponent(query)}`;
   logger.info(`yt-dlp page fetch: ${searchUrl}`);
   const tmpDir = await mkdtemp(join(tmpdir(), 'ph_search_'));
+  const cookieFile = join(tmpDir, 'cookies.txt');
   try {
+    await writeFile(cookieFile, PH_COOKIE_FILE_CONTENT);
+
     await execFileAsync(
       YTDLP_BIN,
       [
@@ -82,20 +94,38 @@ async function searchPornhubViaYtdlp(query) {
         '--no-warnings',
         '--quiet',
         '--impersonate', 'chrome',
-        '--add-header', 'Cookie:age_verified=1; ageGate=true; confirm=1',
+        '--cookies', cookieFile,
         searchUrl
       ],
       { cwd: tmpDir, timeout: 45000 }
     );
 
-    // Find the .dump file yt-dlp wrote
+    // yt-dlp may write several .dump files (e.g. age-gate redirect + search results page).
+    // Scan all of them and use the one that actually contains #videoSearchResult.
     const files = await readdir(tmpDir);
-    const dumpFile = files.find(f => f.endsWith('.dump'));
-    if (!dumpFile) {
-      logger.warn('yt-dlp page fetch: no dump file produced');
+    const dumpFiles = files.filter(f => f.endsWith('.dump'));
+    logger.info(`yt-dlp wrote ${dumpFiles.length} page dump(s)`);
+
+    let html = null;
+    for (const f of dumpFiles) {
+      const content = await readFile(join(tmpDir, f), 'utf8');
+      if (content.includes('id="videoSearchResult"')) {
+        html = content;
+        logger.info(`Using dump: ${f}`);
+        break;
+      }
+    }
+
+    if (!html) {
+      // Log a snippet of what we actually got for debugging
+      if (dumpFiles.length > 0) {
+        const sample = await readFile(join(tmpDir, dumpFiles[0]), 'utf8');
+        logger.warn(`No #videoSearchResult in any dump. First dump snippet: ${sample.slice(0, 200).replace(/\n/g, ' ')}`);
+      } else {
+        logger.warn('yt-dlp page fetch: no dump files produced');
+      }
       return [];
     }
-    const html = await readFile(join(tmpDir, dumpFile), 'utf8');
 
     // Parse using Cheerio, scoped to #videoSearchResult only
     const $ = cheerio.load(html);
@@ -120,7 +150,6 @@ async function searchPornhubViaYtdlp(query) {
     logger.error(`yt-dlp search failed: ${(err.stderr || err.message || '').slice(0, 200)}`);
     return [];
   } finally {
-    // Clean up temp files
     try {
       const files = await readdir(tmpDir);
       await Promise.all(files.map(f => unlink(join(tmpDir, f)).catch(() => {})));
