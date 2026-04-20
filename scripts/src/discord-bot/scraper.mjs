@@ -467,13 +467,14 @@ async function remuxToMp4(tsPath) {
 // ── yt-dlp fallback ───────────────────────────────────────────────────────────
 
 async function downloadWithYtDlp(videoPageUrl, cookies = '') {
-  const tmpPath = join(tmpdir(), `discord_ytdlp_${Date.now()}.mp4`);
+  const timestamp = Date.now();
+  const tmpTemplate = join(tmpdir(), `discord_ytdlp_${timestamp}.%(ext)s`);
+  const tmpMp4 = join(tmpdir(), `discord_ytdlp_${timestamp}.mp4`);
   const cookieStr = cookies || HEADERS.Cookie;
   const args = [
     '--impersonate', 'chrome',
-    '-f', 'bv[height<=480][ext=mp4]+ba[ext=m4a]/bv[height<=480]+ba/worst[ext=mp4]/worst',
-    '--max-filesize', '7.5M',
-    '-o', tmpPath,
+    '-f', 'bestvideo[height<=480]+bestaudio/best[height<=480]/worst',
+    '-o', tmpTemplate,
     '--no-playlist',
     '--merge-output-format', 'mp4',
     '--add-header', `Referer:${videoPageUrl}`,
@@ -484,24 +485,44 @@ async function downloadWithYtDlp(videoPageUrl, cookies = '') {
   logger.info('Trying yt-dlp...');
   try {
     const result = await execFileAsync(YTDLP_BIN, args, { timeout: 120000 });
-    if (result.stdout) logger.info(`yt-dlp stdout: ${result.stdout.slice(0, 300)}`);
+    if (result.stdout) logger.info(`yt-dlp stdout: ${result.stdout.slice(0, 500)}`);
   } catch (err) {
-    const errMsg = (err.stderr || err.stdout || err.message || '').slice(0, 400);
+    const errMsg = (err.stderr || err.stdout || err.message || '').slice(0, 500);
     logger.error('yt-dlp failed:', errMsg);
-    try { await unlink(tmpPath); } catch {}
+    try { await unlink(tmpMp4); } catch {}
     return null;
   }
+  const DISCORD_LIMIT = 8 * 1024 * 1024;
   try {
-    const { size } = await stat(tmpPath);
+    const { size } = await stat(tmpMp4);
     if (size > 0) {
       logger.info(`yt-dlp success: ${(size / 1024 / 1024).toFixed(1)}MB`);
-      return tmpPath;
+      if (size <= DISCORD_LIMIT) return tmpMp4;
+      // File too large — trim to ~60s clip that fits under 8MB
+      const trimmedPath = join(tmpdir(), `discord_ytdlp_${timestamp}_trim.mp4`);
+      logger.info(`File too large (${(size / 1024 / 1024).toFixed(1)}MB), trimming to 60s...`);
+      try {
+        await execFileAsync('ffmpeg', [
+          '-y', '-i', tmpMp4, '-t', '60',
+          '-c', 'copy', '-movflags', '+faststart',
+          '-loglevel', 'error', trimmedPath
+        ], { timeout: 30000 });
+        const { size: trimSize } = await stat(trimmedPath);
+        logger.info(`Trimmed to ${(trimSize / 1024 / 1024).toFixed(1)}MB`);
+        try { await unlink(tmpMp4); } catch {}
+        if (trimSize > 0 && trimSize <= DISCORD_LIMIT) return trimmedPath;
+        try { await unlink(trimmedPath); } catch {}
+      } catch (trimErr) {
+        logger.error('Trim failed:', trimErr.message);
+        try { await unlink(tmpMp4); } catch {}
+      }
+      return null;
     }
     logger.warn('yt-dlp produced empty file');
   } catch {
     logger.warn('yt-dlp output file not found');
   }
-  try { await unlink(tmpPath); } catch {}
+  try { await unlink(tmpMp4); } catch {}
   return null;
 }
 
