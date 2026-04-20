@@ -343,7 +343,18 @@ export async function getVideoStreamUrl(videoPageUrl) {
     }
   }
 
-  // 5. xvideos HLS via html5player.setVideoHLS(...)
+  // 5. xvideos direct MP4 via html5player.setVideoUrlHigh / setVideoUrlLow
+  const xvMp4Match = allScripts.match(/html5player\.setVideoUrl(?:High|Low)\s*\(\s*['"]([^'"]+)['"]\s*\)/i);
+  if (xvMp4Match) {
+    const mp4Url = unescapeUrl(xvMp4Match[1]);
+    const resolved = resolveUrl(mp4Url, videoPageUrl);
+    if (resolved) {
+      logger.info(`Found xvideos direct MP4 URL: ${resolved.slice(0, 80)}`);
+      return { url: resolved, isHls: false, cookies: sessionCookies };
+    }
+  }
+
+  // 5b. xvideos HLS via html5player.setVideoHLS(...) — only if no direct MP4
   const xvHlsMatch = allScripts.match(/html5player\.setVideoHLS\s*\(\s*['"]([^'"]+)['"]\s*\)/i);
   if (xvHlsMatch) {
     const hlsUrl = unescapeUrl(xvHlsMatch[1]);
