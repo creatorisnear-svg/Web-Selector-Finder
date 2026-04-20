@@ -66,6 +66,29 @@ async function handleStreamProxy(req, res) {
     return;
   }
 
+  // Discord's unfurler sends a HEAD or GET with "Discordbot" user-agent.
+  // Return an OG-tag HTML page so Discord shows an inline video embed.
+  const ua = req.headers['user-agent'] || '';
+  const isUnfurler = ua.includes('Discordbot') || ua.includes('Twitterbot') || ua.includes('facebookexternalhit') || req.method === 'HEAD';
+  if (isUnfurler) {
+    const streamUrl = `${process.env.STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(raw)}&ref=${encodeURIComponent(ref || '')}`;
+    const html = `<!DOCTYPE html><html><head>
+<meta property="og:type" content="video.other"/>
+<meta property="og:video" content="${streamUrl}"/>
+<meta property="og:video:secure_url" content="${streamUrl}"/>
+<meta property="og:video:type" content="video/mp4"/>
+<meta property="og:video:width" content="1280"/>
+<meta property="og:video:height" content="720"/>
+<meta property="twitter:card" content="player"/>
+<meta property="twitter:player" content="${streamUrl}"/>
+<meta property="twitter:player:width" content="1280"/>
+<meta property="twitter:player:height" content="720"/>
+</head><body></body></html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
   const extra = {};
   if (ref) {
     try {
