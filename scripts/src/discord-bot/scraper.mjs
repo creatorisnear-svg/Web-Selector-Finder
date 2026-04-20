@@ -223,20 +223,34 @@ async function searchXnxx(query) {
     const seen = new Set();
     const results = [];
 
-    $('.thumb-block, .mozaique .thumb').each((_, el) => {
+    $('.thumb-block').each((_, el) => {
       if (results.length >= 20) return;
-      const anchor = $(el).find('a[href*="/video"]').first();
+      // Only follow links to actual xnxx.com video pages (href starts with /video-)
+      const anchor = $(el).find('a[href^="/video-"]').first();
       const href = anchor.attr('href') || '';
       if (!href || seen.has(href)) return;
       seen.add(href);
-      const url = href.startsWith('http') ? href : `https://www.xnxx.com${href}`;
-      const title = (
-        $(el).find('.title a, .thumb-under p a, p.title a').first().text().trim() ||
-        anchor.attr('title') || ''
-      ).replace(/\s+\d+\s*(min|sec)\s*$/, '').trim();
+      const url = `https://www.xnxx.com${href}`;
+
+      // Title lives in .thumb-under text — grab it and strip junk
+      const thumbUnder = $(el).find('.thumb-under').first();
+      const title = thumbUnder.text().trim().split('\n')[0].trim()
+        .replace(/\s+\d+\s*(min|sec)\s*$/i, '').trim();
       if (!title || title.length < 4) return;
-      const rawDuration = $(el).find('.metadata, .duration, [class*="duration"]').first().text().trim() || '';
-      const duration = rawDuration || null;
+
+      // Duration is inside .metadata — extract "NNmin" or "NN:NN" pattern
+      const metaText = $(el).find('.metadata').first().text();
+      const durMatch = metaText.match(/(\d+)\s*min/i) || metaText.match(/(\d+:\d+)/);
+      let duration = null;
+      if (durMatch) {
+        if (durMatch[0].includes(':')) {
+          duration = durMatch[1];
+        } else {
+          const mins = parseInt(durMatch[1], 10);
+          duration = `${mins}:00`;
+        }
+      }
+
       results.push({
         title: title.length > 80 ? title.slice(0, 77) + '...' : title,
         url,
