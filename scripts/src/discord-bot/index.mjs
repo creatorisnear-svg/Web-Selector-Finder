@@ -376,6 +376,8 @@ function buildResultsPage(results, page, key, userId) {
   return { embeds: [embed], components: [selectRow, navRow] };
 }
 
+const YTDLP_TIMEOUT_MS = 12000;
+
 async function handleVideoFetch(interaction, picked, isUpdate = true) {
   const fetchPayload = { content: `⏳ Fetching **${picked.title}**...`, embeds: [], components: [] };
   if (isUpdate) await interaction.update(fetchPayload);
@@ -383,30 +385,36 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
 
   const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
 
-  let proxyTargetUrl = null;
-  if (STREAM_BASE_URL) {
-    logger.info('Trying yt-dlp direct URL extraction...');
-    proxyTargetUrl = await getDirectMp4Url(picked.url, '');
-  }
-
-  if (STREAM_BASE_URL && proxyTargetUrl) {
-    const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(proxyTargetUrl)}&ref=${encodeURIComponent(picked.url)}`;
-    logger.info(`Using yt-dlp proxy URL: ${proxyUrl.slice(0, 100)}`);
-    await interaction.editReply({ content: `🎬 **${picked.title}**\n${proxyUrl}`, embeds: [], components: [] });
-    return;
-  }
-
+  // Step 1: HTML scraper — fast (1-2s), now extracts direct MP4 URLs for xvideos.
+  // If it returns a direct MP4 we proxy it immediately without calling yt-dlp at all.
   const stream = await getVideoStreamUrl(picked.url);
-  logger.info(`Stream result: ${stream ? stream.url?.slice(0, 80) : 'null'}`);
+  logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
 
   if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
     const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(stream.url)}&ref=${encodeURIComponent(picked.url)}`;
-    logger.info(`Using scraped MP4 proxy: ${proxyUrl.slice(0, 100)}`);
+    logger.info(`Fast path — scraped MP4 proxy: ${proxyUrl.slice(0, 100)}`);
     await interaction.editReply({ content: `🎬 **${picked.title}**\n${proxyUrl}`, embeds: [], components: [] });
     return;
   }
 
-  logger.info('No proxiable URL found — downloading for upload...');
+  // Step 2: Scraper got HLS or nothing — try yt-dlp with a hard timeout so it never hangs.
+  if (STREAM_BASE_URL) {
+    logger.info('HLS/no URL — trying yt-dlp (12s timeout)...');
+    const directUrl = await Promise.race([
+      getDirectMp4Url(picked.url, stream?.cookies || ''),
+      new Promise(r => setTimeout(() => r(null), YTDLP_TIMEOUT_MS)),
+    ]);
+    if (directUrl) {
+      const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(directUrl)}&ref=${encodeURIComponent(picked.url)}`;
+      logger.info(`yt-dlp proxy: ${proxyUrl.slice(0, 100)}`);
+      await interaction.editReply({ content: `🎬 **${picked.title}**\n${proxyUrl}`, embeds: [], components: [] });
+      return;
+    }
+    logger.warn('yt-dlp timed out or returned nothing — falling back to download');
+  }
+
+  // Step 3: Download and upload directly to Discord as a file.
+  logger.info('Downloading clip for upload...');
   const filePath = await downloadVideoClip(stream?.url || '', stream?.cookies || '', picked.url);
 
   if (filePath) {
@@ -415,9 +423,9 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
     await interaction.editReply({ content: `🎬 **${picked.title}**`, embeds: [], components: [], files: [attachment] });
     await cleanupClip(filePath);
   } else {
-    logger.warn(`Download failed for: ${picked.url}`);
+    logger.warn(`All methods failed for: ${picked.url}`);
     await interaction.editReply({
-      content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Couldn't download directly. Click the link to watch.`,
+      content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Couldn't fetch this video. Click the link to watch.`,
       embeds: [],
       components: []
     });

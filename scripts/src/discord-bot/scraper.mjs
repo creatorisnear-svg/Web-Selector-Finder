@@ -676,7 +676,7 @@ export async function getDirectMp4Url(videoPageUrl, cookies = '') {
   ];
   logger.info('Extracting direct URL via yt-dlp...');
   try {
-    const { stdout } = await execFileAsync(YTDLP_BIN, args, { timeout: 30000 });
+    const { stdout } = await execFileAsync(YTDLP_BIN, args, { timeout: 11000 });
     const url = stdout.trim().split('\n')[0].trim();
     if (url && url.startsWith('http') && !url.includes('.m3u8')) {
       logger.info(`yt-dlp direct URL: ${url.slice(0, 80)}`);
