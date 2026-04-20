@@ -466,8 +466,9 @@ async function remuxToMp4(tsPath) {
 
 // ── yt-dlp fallback ───────────────────────────────────────────────────────────
 
-async function downloadWithYtDlp(videoPageUrl) {
+async function downloadWithYtDlp(videoPageUrl, cookies = '') {
   const tmpPath = join(tmpdir(), `discord_ytdlp_${Date.now()}.mp4`);
+  const cookieStr = cookies || HEADERS.Cookie;
   const args = [
     '--impersonate', 'chrome',
     '-f', 'bv[height<=480][ext=mp4]+ba[ext=m4a]/bv[height<=480]+ba/worst[ext=mp4]/worst',
@@ -475,21 +476,30 @@ async function downloadWithYtDlp(videoPageUrl) {
     '-o', tmpPath,
     '--no-playlist',
     '--merge-output-format', 'mp4',
-    '--quiet',
-    '--no-warnings',
+    '--add-header', `Referer:${videoPageUrl}`,
+    '--add-header', `Cookie:${cookieStr}`,
     videoPageUrl
   ];
 
   logger.info('Trying yt-dlp...');
   try {
-    await execFileAsync(YTDLP_BIN, args, { timeout: 120000 });
+    const result = await execFileAsync(YTDLP_BIN, args, { timeout: 120000 });
+    if (result.stdout) logger.info(`yt-dlp stdout: ${result.stdout.slice(0, 300)}`);
+  } catch (err) {
+    const errMsg = (err.stderr || err.stdout || err.message || '').slice(0, 400);
+    logger.error('yt-dlp failed:', errMsg);
+    try { await unlink(tmpPath); } catch {}
+    return null;
+  }
+  try {
     const { size } = await stat(tmpPath);
     if (size > 0) {
       logger.info(`yt-dlp success: ${(size / 1024 / 1024).toFixed(1)}MB`);
       return tmpPath;
     }
-  } catch (err) {
-    logger.error('yt-dlp failed:', (err.stderr || err.message || '').slice(0, 200));
+    logger.warn('yt-dlp produced empty file');
+  } catch {
+    logger.warn('yt-dlp output file not found');
   }
   try { await unlink(tmpPath); } catch {}
   return null;
@@ -500,6 +510,13 @@ async function downloadWithYtDlp(videoPageUrl) {
 export async function downloadVideoClip(streamUrl, cookies = '', videoPageUrl = '') {
   const reqHeaders = { ...HEADERS };
   if (cookies) reqHeaders['Cookie'] = cookies;
+  if (videoPageUrl) {
+    try {
+      const origin = new URL(videoPageUrl);
+      reqHeaders['Referer'] = videoPageUrl;
+      reqHeaders['Origin'] = `${origin.protocol}//${origin.host}`;
+    } catch {}
+  }
   const MAX = 8 * 1024 * 1024;
 
   const isHls = streamUrl.includes('.m3u8');
@@ -555,7 +572,7 @@ export async function downloadVideoClip(streamUrl, cookies = '', videoPageUrl = 
   }
 
   if (videoPageUrl) {
-    const ytPath = await downloadWithYtDlp(videoPageUrl);
+    const ytPath = await downloadWithYtDlp(videoPageUrl, cookies);
     if (ytPath) return ytPath;
   }
 
