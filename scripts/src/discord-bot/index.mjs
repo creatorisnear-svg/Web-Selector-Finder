@@ -433,40 +433,42 @@ async function handleInteraction(interaction) {
       components: []
     });
 
+    const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
+
+    // Step 1: Try yt-dlp URL extraction — gives a full, direct MP4 CDN URL
+    // This is the most reliable source (yt-dlp knows each site's format).
+    let proxyTargetUrl = null;
+    if (STREAM_BASE_URL) {
+      logger.info('Trying yt-dlp direct URL extraction...');
+      proxyTargetUrl = await getDirectMp4Url(picked.url, '');
+    }
+
+    // Step 2: If yt-dlp found a direct MP4, proxy it (supports range/seeking in Discord)
+    if (STREAM_BASE_URL && proxyTargetUrl) {
+      const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(proxyTargetUrl)}&ref=${encodeURIComponent(picked.url)}`;
+      logger.info(`Using yt-dlp proxy URL: ${proxyUrl.slice(0, 100)}`);
+      await interaction.editReply({
+        content: `🎬 **${picked.title}**\n${proxyUrl}`
+      });
+      return;
+    }
+
+    // Step 3: Fall back to HTML scraping for the stream URL
     const stream = await getVideoStreamUrl(picked.url);
     logger.info(`Stream result: ${stream ? stream.url?.slice(0, 80) : 'null'}`);
 
-    const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
-
-    // For direct MP4 streams, proxy works perfectly (supports range requests / seeking).
-    // For HLS streams, Discord's player can't seek a live transcode, so we resolve a
-    // direct MP4 URL via yt-dlp and proxy that instead.
-    if (STREAM_BASE_URL && stream?.url) {
-      let proxyTargetUrl = null;
-
-      if (!stream.isHls) {
-        // Already a direct MP4 — proxy it straight away
-        proxyTargetUrl = stream.url;
-      } else {
-        // HLS — ask yt-dlp for a direct MP4 CDN URL (no download, instant)
-        logger.info('HLS stream detected — trying yt-dlp URL extraction for direct MP4...');
-        proxyTargetUrl = await getDirectMp4Url(picked.url, stream.cookies || '');
-      }
-
-      if (proxyTargetUrl) {
-        const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(proxyTargetUrl)}&ref=${encodeURIComponent(picked.url)}`;
-        logger.info(`Using proxy stream: ${proxyUrl.slice(0, 100)}`);
-        await interaction.editReply({
-          content: `🎬 **${picked.title}**\n${proxyUrl}`
-        });
-        return;
-      }
-
-      logger.info('No direct MP4 URL available — falling back to download+upload');
+    if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
+      // Direct MP4 from scraping — proxy it
+      const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(stream.url)}&ref=${encodeURIComponent(picked.url)}`;
+      logger.info(`Using scraped MP4 proxy: ${proxyUrl.slice(0, 100)}`);
+      await interaction.editReply({
+        content: `🎬 **${picked.title}**\n${proxyUrl}`
+      });
+      return;
     }
 
-    // Fall back to download + upload
-    logger.info('Downloading clip for upload...');
+    // Step 4: Download and upload directly to Discord
+    logger.info('No proxiable URL found — downloading for upload...');
     const filePath = await downloadVideoClip(
       stream?.url || '',
       stream?.cookies || '',
