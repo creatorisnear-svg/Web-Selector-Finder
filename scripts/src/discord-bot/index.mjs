@@ -14,7 +14,7 @@ import {
   AttachmentBuilder,
   MessageFlags
 } from 'discord.js';
-import { searchVideos, getVideoStreamUrl, downloadVideoClip, cleanupClip } from './scraper.mjs';
+import { searchVideos, getVideoStreamUrl, getDirectMp4Url, downloadVideoClip, cleanupClip } from './scraper.mjs';
 import { logger } from './logger.mjs';
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -436,19 +436,37 @@ async function handleInteraction(interaction) {
     const stream = await getVideoStreamUrl(picked.url);
     logger.info(`Stream result: ${stream ? stream.url?.slice(0, 80) : 'null'}`);
 
-    // Try proxy stream first (instant — no download needed)
     const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
+
+    // For direct MP4 streams, proxy works perfectly (supports range requests / seeking).
+    // For HLS streams, Discord's player can't seek a live transcode, so we resolve a
+    // direct MP4 URL via yt-dlp and proxy that instead.
     if (STREAM_BASE_URL && stream?.url) {
-      const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(stream.url)}&ref=${encodeURIComponent(picked.url)}`;
-      logger.info(`Using proxy stream: ${proxyUrl.slice(0, 100)}`);
-      await interaction.editReply({
-        content: `🎬 **${picked.title}**\n${proxyUrl}`
-      });
-      return;
+      let proxyTargetUrl = null;
+
+      if (!stream.isHls) {
+        // Already a direct MP4 — proxy it straight away
+        proxyTargetUrl = stream.url;
+      } else {
+        // HLS — ask yt-dlp for a direct MP4 CDN URL (no download, instant)
+        logger.info('HLS stream detected — trying yt-dlp URL extraction for direct MP4...');
+        proxyTargetUrl = await getDirectMp4Url(picked.url, stream.cookies || '');
+      }
+
+      if (proxyTargetUrl) {
+        const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(proxyTargetUrl)}&ref=${encodeURIComponent(picked.url)}`;
+        logger.info(`Using proxy stream: ${proxyUrl.slice(0, 100)}`);
+        await interaction.editReply({
+          content: `🎬 **${picked.title}**\n${proxyUrl}`
+        });
+        return;
+      }
+
+      logger.info('No direct MP4 URL available — falling back to download+upload');
     }
 
     // Fall back to download + upload
-    logger.info('Proxy not available — falling back to download');
+    logger.info('Downloading clip for upload...');
     const filePath = await downloadVideoClip(
       stream?.url || '',
       stream?.cookies || '',

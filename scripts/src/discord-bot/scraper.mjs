@@ -633,3 +633,32 @@ export async function cleanupClip(filePath) {
     logger.debug(`Cleaned up temp file: ${filePath}`);
   } catch {}
 }
+
+// ── yt-dlp URL extraction (no download) ──────────────────────────────────────
+// Returns a direct MP4 CDN URL that can be proxied with range support.
+// Returns null if yt-dlp can't find one.
+export async function getDirectMp4Url(videoPageUrl, cookies = '') {
+  const cookieStr = cookies || HEADERS.Cookie;
+  const args = [
+    '--impersonate', 'chrome',
+    '--get-url',
+    '-f', 'best[ext=mp4][height<=480]/best[ext=mp4]/best[height<=480]/best',
+    '--no-playlist',
+    '--add-header', `Referer:${videoPageUrl}`,
+    '--add-header', `Cookie:${cookieStr}`,
+    videoPageUrl
+  ];
+  logger.info('Extracting direct URL via yt-dlp...');
+  try {
+    const { stdout } = await execFileAsync(YTDLP_BIN, args, { timeout: 30000 });
+    const url = stdout.trim().split('\n')[0].trim();
+    if (url && url.startsWith('http') && !url.includes('.m3u8')) {
+      logger.info(`yt-dlp direct URL: ${url.slice(0, 80)}`);
+      return url;
+    }
+    logger.warn('yt-dlp returned no usable direct URL');
+  } catch (err) {
+    logger.warn('yt-dlp URL extraction failed:', (err.stderr || err.message || '').slice(0, 200));
+  }
+  return null;
+}
