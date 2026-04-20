@@ -29,8 +29,19 @@ if (!TOKEN || !CLIENT_ID) {
 // Hardcoded PornHub search URL
 const SEARCH_URL = 'https://www.pornhub.com/video/search?search={query}';
 
-// Temporary search results store: key -> results array
+// Temporary search results store: key -> { results, query, site }
 const pendingResults = new Map();
+
+// Short video link store: shortId -> { streamUrl, refUrl, title }
+// Links expire after 2 hours — long enough for Discord to cache the embed.
+const videoLinks = new Map();
+
+function createShortLink(streamUrl, refUrl, title) {
+  const id = Math.random().toString(36).slice(2, 9); // 7-char ID e.g. "k4x9bza"
+  videoLinks.set(id, { streamUrl, refUrl, title });
+  setTimeout(() => videoLinks.delete(id), 2 * 60 * 60 * 1000);
+  return `${process.env.STREAM_BASE_URL}/v/${id}`;
+}
 
 // ── Stream proxy helpers ──────────────────────────────────────────────────────
 const PROXY_HEADERS = {
@@ -262,15 +273,54 @@ async function handleVideoStream(req, res) {
 const PORT = parseInt(process.env.PORT || '5000', 10);
 const healthServer = http.createServer(async (req, res) => {
   const path = (req.url || '/').split('?')[0];
+
   if (path === '/api/stream/video.mp4') {
     await handleStreamProxy(req, res);
-  } else if (path === '/api/stream/play/video.mp4') {
-    // Always stream — never return HTML regardless of user-agent
-    await handleVideoStream(req, res);
-  } else {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('OK');
+    return;
   }
+
+  if (path === '/api/stream/play/video.mp4') {
+    await handleVideoStream(req, res);
+    return;
+  }
+
+  // Short video links: /v/:id
+  const shortMatch = path.match(/^\/v\/([a-z0-9]+)$/i);
+  if (shortMatch) {
+    const id = shortMatch[1];
+    const link = videoLinks.get(id);
+    if (!link) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Link expired or not found');
+      return;
+    }
+    const { streamUrl, refUrl, title } = link;
+    const playUrl = `${process.env.STREAM_BASE_URL}/api/stream/play/video.mp4?url=${encodeURIComponent(streamUrl)}&ref=${encodeURIComponent(refUrl || '')}`;
+    const ua = req.headers['user-agent'] || '';
+    const isUnfurler = ua.includes('Discordbot') || ua.includes('Twitterbot') || ua.includes('facebookexternalhit') || req.method === 'HEAD';
+    if (isUnfurler) {
+      const safeTitle = (title || 'Video').replace(/"/g, '&quot;');
+      const html = `<!DOCTYPE html><html><head>
+<meta property="og:type" content="video.other"/>
+<meta property="og:title" content="${safeTitle}"/>
+<meta property="og:video" content="${playUrl}"/>
+<meta property="og:video:secure_url" content="${playUrl}"/>
+<meta property="og:video:type" content="video/mp4"/>
+<meta property="og:video:width" content="1280"/>
+<meta property="og:video:height" content="720"/>
+</head><body></body></html>`;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    } else {
+      // Regular browser — redirect straight to the stream
+      res.writeHead(302, { 'Location': playUrl });
+      res.end();
+    }
+    return;
+  }
+
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('OK');
 });
 healthServer.listen(PORT, () => {
   logger.info(`Health check server listening on port ${PORT}`);
@@ -402,9 +452,9 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
   logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
 
   if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
-    const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(stream.url)}&ref=${encodeURIComponent(picked.url)}`;
-    logger.info(`Fast path — scraped MP4 proxy: ${proxyUrl.slice(0, 100)}`);
-    await interaction.editReply({ content: `🎬 **${picked.title}**\n${proxyUrl}`, embeds: [], components: [] });
+    const shortUrl = createShortLink(stream.url, picked.url, picked.title);
+    logger.info(`Fast path — short link: ${shortUrl}`);
+    await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
     return;
   }
 
@@ -416,9 +466,9 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
       new Promise(r => setTimeout(() => r(null), YTDLP_TIMEOUT_MS)),
     ]);
     if (directUrl) {
-      const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(directUrl)}&ref=${encodeURIComponent(picked.url)}`;
-      logger.info(`yt-dlp proxy: ${proxyUrl.slice(0, 100)}`);
-      await interaction.editReply({ content: `🎬 **${picked.title}**\n${proxyUrl}`, embeds: [], components: [] });
+      const shortUrl = createShortLink(directUrl, picked.url, picked.title);
+      logger.info(`yt-dlp short link: ${shortUrl}`);
+      await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
       return;
     }
     logger.warn('yt-dlp timed out or returned nothing — falling back to download');
