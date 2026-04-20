@@ -13,8 +13,10 @@
     "tsx": "catalog:"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "axios": "^1.15.0",
     "cheerio": "^1.2.0",
-    "discord.js": "^14.26.3"
+    "discord.js": "^14.26.3",
+    "fluent-ffmpeg": "^2.1.3"
   }
 }

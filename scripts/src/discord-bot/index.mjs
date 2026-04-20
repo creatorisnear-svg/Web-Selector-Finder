@@ -7,9 +7,10 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   ActionRowBuilder,
+  AttachmentBuilder,
   MessageFlags
 } from 'discord.js';
-import { searchVideos, getDirectMp4 } from './scraper.mjs';
+import { searchVideos, getVideoStreamUrl, downloadVideoClip, cleanupClip } from './scraper.mjs';
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -192,19 +193,32 @@ async function handleInteraction(interaction) {
     pendingResults.delete(key);
 
     await interaction.update({
-      content: `⏳ Finding the video file for **${picked.title}**...`,
+      content: `⏳ Downloading **${picked.title}**... (this may take a few seconds)`,
       components: []
     });
 
-    const mp4Url = await getDirectMp4(picked.url);
+    // Step 1: Find the video stream URL on the page (for our custom downloader)
+    const stream = await getVideoStreamUrl(picked.url);
 
-    if (mp4Url) {
+    // Step 2: Download — try axios (fast, for simple sites) then yt-dlp (handles auth, many sites)
+    const filePath = await downloadVideoClip(
+      stream?.url || '',
+      stream?.cookies || '',
+      picked.url
+    );
+
+    if (filePath) {
+      // Upload the file as a Discord attachment — plays inline
+      const attachment = new AttachmentBuilder(filePath, { name: 'video.mp4' });
       await interaction.editReply({
-        content: `🎬 **${picked.title}**\n${mp4Url}`
+        content: `🎬 **${picked.title}**`,
+        files: [attachment]
       });
+      await cleanupClip(filePath);
     } else {
+      // Download failed (CDN block, too large, or unsupported site) — send page link
       await interaction.editReply({
-        content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Could not find a direct video file — this site may load videos with JavaScript. The link above will open the page.`
+        content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Couldn't download this video directly (the site may block server-side access). Click the link above to watch.`
       });
     }
   }
