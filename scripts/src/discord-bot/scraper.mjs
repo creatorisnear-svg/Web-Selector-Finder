@@ -27,6 +27,66 @@ function resolveUrl(href, baseUrl) {
   return null;
 }
 
+// ── PornHub-specific search scraper ──────────────────────────────────────────
+// Targets only the actual search result list items, not sidebar/recommended links.
+function scrapePornhub($, pageUrl) {
+  const results = [];
+  const seen = new Set();
+
+  // PH wraps search results in <li class="pcVideoListItem"> inside #videoSearchResult
+  // Each item has an <a class="linkVideoThumb"> with the URL and title attribute,
+  // and a <span class="title"> containing the display title.
+  const containers = $('li.pcVideoListItem, li.videoBox');
+
+  containers.each((_, li) => {
+    if (results.length >= 10) return;
+
+    // Primary link with title
+    const thumbLink = $(li).find('a.linkVideoThumb, a[class*="videoThumb"]').first();
+    const titleLink = $(li).find('.title a, span.title a').first();
+
+    const href = thumbLink.attr('href') || titleLink.attr('href');
+    if (!href || seen.has(href)) return;
+    seen.add(href);
+
+    const fullUrl = resolveUrl(href, pageUrl);
+    if (!fullUrl) return;
+    if (!fullUrl.includes('view_video') && !fullUrl.includes('viewkey')) return;
+
+    // Try several title sources in order of reliability
+    const title =
+      thumbLink.attr('title') ||
+      titleLink.text().trim() ||
+      $(li).find('[title]').first().attr('title') ||
+      $(li).find('.title').first().text().trim();
+
+    if (!title || title.length < 4) return;
+
+    results.push({
+      title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+      url: fullUrl
+    });
+  });
+
+  logger.info(`PH-specific scraper found ${results.length} results`);
+  return results;
+}
+
+// ── Generic fallback scraper ──────────────────────────────────────────────────
+const SKIP_URL_PATTERN = /(login|signup|register|cdn\.|\.jpg|\.jpeg|\.png|\.gif|\.webp|\.svg|\.ico|\/tag\/|\/tags\/|\/category\/|\/categories\/|\/channel\/|\/channels\/|\/user\/|\/users\/|\/profile\/|\/author\/|\/page\/|\/feed|\/rss|javascript:|mailto:|#|\/about|\/help|\/support|\/contact|\/legal|\/privacy|\/terms|\/dmca|\/faq|\/advertise|\/careers|\/press|\/sitemap|\/playlist|\/playlists|\/gif|\/gifs|\/photo|\/photos|\/image|\/images|\/album|\/albums|\/gallery|\/galleries|\/collection|\/collections|\/random)/i;
+const VIDEO_PATH_PATTERN = /\/(video|videos|watch|v|embed|clip|view_video|play|tube|movie|scene|vids?)[\/-]|\/(watch|embed)\?|viewkey=|[?&]v=|\/\d{4,}[^/]*$/i;
+
+const JUNK_TITLE_WORDS = /^(trust|safety|notice|terms|privacy|cookie|about|help|support|contact|legal|dmca|faq|adverti|careers|press|sitemap|accessibility|copyright|report|feedback|language|settings|sign in|log in|sign up|register|subscribe|upgrade|premium|home|back|next|prev|more|less|see all|view all|show all|load more|follow|share|embed|download|playlist|channel|community|forum|blog|news|store|shop|gift|merch|gif|photo|image|album|gallery)$/i;
+
+function isJunkTitle(title) {
+  if (!title) return true;
+  const t = title.trim();
+  if (t.length < 5 || t.length > 200) return true;
+  if (JUNK_TITLE_WORDS.test(t)) return true;
+  if (t.length < 20 && t === t.toUpperCase()) return true;
+  return false;
+}
+
 function getTitle(el, $) {
   const sources = [
     $(el).attr('title'),
@@ -42,47 +102,35 @@ function getTitle(el, $) {
   return null;
 }
 
-// Words found in nav/footer links — never real video titles
-const JUNK_TITLE_WORDS = /^(trust|safety|notice|terms|privacy|cookie|about|help|support|contact|legal|dmca|faq|adverti|careers|press|sitemap|accessibility|copyright|report|feedback|language|settings|sign in|log in|sign up|register|subscribe|upgrade|premium|home|back|next|prev|more|less|see all|view all|show all|load more|follow|share|embed|download|playlist|channel|community|forum|blog|news|store|shop|gift|merch|gif|photo|image|album|gallery)$/i;
+function scrapeGeneric($, pageUrl) {
+  const results = [];
+  const seen = new Set();
 
-// URL path segments to skip — non-video pages and non-video media types
-const SKIP_URL_PATTERN = /(login|signup|register|cdn\.|\.jpg|\.jpeg|\.png|\.gif|\.webp|\.svg|\.ico|\/search|\/tag|\/tags|\/category|\/categories|\/channel|\/channels|\/user|\/users|\/profile|\/author|\/page\/|\/feed|\/rss|javascript:|mailto:|#|\/about|\/help|\/support|\/contact|\/legal|\/privacy|\/terms|\/dmca|\/faq|\/advertise|\/careers|\/press|\/sitemap|\/playlist|\/playlists|\/gif|\/gifs|\/photo|\/photos|\/image|\/images|\/album|\/albums|\/gallery|\/galleries|\/collection|\/collections|\/random|\/top$|\/featured$|\/recommended$|\/popular$|\/trending$|\/new$|\/latest$|\/most-|\/best-)/i;
+  $('a[href]').each((_, el) => {
+    if (results.length >= 10) return;
+    const href = $(el).attr('href');
+    if (!href || seen.has(href)) return;
+    if (SKIP_URL_PATTERN.test(href)) return;
+    if (!VIDEO_PATH_PATTERN.test(href)) return;
 
-// URL patterns that look like individual video pages
-const VIDEO_PATH_PATTERN = /\/(video|videos|watch|v|embed|clip|view_video|play|tube|movie|scene|porn|flv|vids?)[\/-]|\/(watch|embed)\?|viewkey=|[?&]v=|\/\d{4,}[^/]*$|\/(video|videos|vids?)\/[^/?#]{3,}/i;
+    const fullUrl = resolveUrl(href, pageUrl);
+    if (!fullUrl) return;
 
-function isJunkTitle(title) {
-  if (!title) return true;
-  const t = title.trim();
-  if (t.length < 5) return true;
-  if (t.length > 200) return true;
-  if (JUNK_TITLE_WORDS.test(t)) return true;
-  if (t.length < 20 && t === t.toUpperCase()) return true;
-  return false;
+    const title = getTitle(el, $);
+    if (isJunkTitle(title)) return;
+
+    seen.add(href);
+    results.push({
+      title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+      url: fullUrl
+    });
+  });
+
+  logger.info(`Generic scraper found ${results.length} results`);
+  return results;
 }
 
-// Returns a relevance score (0–N) for how well a title matches the query.
-// Splits query into meaningful words (3+ chars) and counts how many appear in the title.
-function relevanceScore(title, queryWords) {
-  if (!queryWords.length) return 1; // no words to match — always relevant
-  const lowerTitle = title.toLowerCase();
-  let score = 0;
-  for (const word of queryWords) {
-    if (lowerTitle.includes(word)) score++;
-  }
-  return score;
-}
-
-// Extract meaningful search words (3+ chars, not stop words)
-const STOP_WORDS = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'are', 'was', 'has', 'have', 'not', 'from', 'but', 'all', 'can', 'her', 'his', 'its', 'she', 'him', 'they', 'what', 'who', 'how', 'get', 'got', 'may', 'more', 'also', 'very', 'too', 'out', 'then', 'now', 'just', 'into', 'over', 'only', 'back', 'will', 'been', 'when', 'your', 'our', 'their', 'one', 'two', 'any', 'some', 'each', 'does', 'did', 'had', 'him', 'off']);
-
-function extractQueryWords(query) {
-  return query
-    .toLowerCase()
-    .split(/\W+/)
-    .filter(w => w.length >= 3 && !STOP_WORDS.has(w));
-}
-
+// ── Public search entry point ─────────────────────────────────────────────────
 export async function searchVideos(searchUrlTemplate, query) {
   const url = searchUrlTemplate.replace('{query}', encodeURIComponent(query));
   logger.info(`Searching: ${url}`);
@@ -90,88 +138,26 @@ export async function searchVideos(searchUrlTemplate, query) {
   const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000 });
   const $ = cheerio.load(data);
 
-  const queryWords = extractQueryWords(query);
-  logger.debug(`Query words for relevance filter: ${JSON.stringify(queryWords)}`);
+  const isPornhub = url.includes('pornhub.com');
 
-  const candidates = [];
-  const seenHrefs = new Set();
+  let results = isPornhub ? scrapePornhub($, url) : [];
 
-  $('a[href]').each((i, el) => {
-    const href = $(el).attr('href');
-    if (!href || seenHrefs.has(href)) return;
-    if (SKIP_URL_PATTERN.test(href)) return;
-    if (!VIDEO_PATH_PATTERN.test(href)) return;
-
-    const fullUrl = resolveUrl(href, url);
-    if (!fullUrl) return;
-
-    const title = getTitle(el, $);
-    if (isJunkTitle(title)) return;
-
-    seenHrefs.add(href);
-    candidates.push({
-      title: title.length > 80 ? title.slice(0, 77) + '...' : title,
-      url: fullUrl,
-      score: relevanceScore(title, queryWords)
-    });
-  });
-
-  // Fallback: wider net if strict video URL pattern found nothing
-  if (candidates.length === 0) {
-    logger.info('Strict video URL match found nothing — trying wider search');
-    $('a[href]').each((i, el) => {
-      const href = $(el).attr('href');
-      if (!href || seenHrefs.has(href)) return;
-      if (SKIP_URL_PATTERN.test(href)) return;
-      if (!href.startsWith('/') && !href.startsWith('http')) return;
-      if (href === '/' || href.split('/').filter(Boolean).length < 2) return;
-
-      const fullUrl = resolveUrl(href, url);
-      if (!fullUrl) return;
-
-      const title = getTitle(el, $);
-      if (isJunkTitle(title)) return;
-
-      seenHrefs.add(href);
-      candidates.push({
-        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
-        url: fullUrl,
-        score: relevanceScore(title, queryWords)
-      });
-    });
+  // Fall back to generic scraper if PH-specific found nothing (or for non-PH sites)
+  if (results.length === 0) {
+    logger.info('Falling back to generic scraper');
+    results = scrapeGeneric($, url);
   }
 
-  // Sort by relevance — highest score first
-  candidates.sort((a, b) => b.score - a.score);
-
-  // If we have relevant results (score > 0), only keep those
-  const relevant = candidates.filter(r => r.score > 0);
-  const results = (relevant.length > 0 ? relevant : candidates).slice(0, 10);
-
-  logger.info(`Found ${candidates.length} candidates, ${relevant.length} relevant — returning ${results.length}`);
-  if (results.length > 0) {
-    logger.debug('Top results:', results.slice(0, 3).map(r => `[${r.score}] ${r.title}`).join(' | '));
-  }
-
-  return results.map(({ title, url }) => ({ title, url }));
+  logger.info(`Returning ${results.length} results for "${query}"`);
+  return results;
 }
 
-// Score a video URL by quality — higher is better
-function qualityScore(url) {
-  if (url.includes('1080')) return 4;
-  if (url.includes('720')) return 3;
-  if (url.includes('480')) return 2;
-  if (url.includes('360')) return 1;
-  if (url.includes('hd') || url.includes('high')) return 2;
-  return 0;
-}
+// ── Video stream extraction ───────────────────────────────────────────────────
 
-// Unescape JSON-encoded URLs (e.g. https:\/\/example.com -> https://example.com)
 function unescapeUrl(str) {
   return str.replace(/\\\//g, '/').replace(/\\u0026/g, '&');
 }
 
-// Is this URL a thumbnail/image CDN URL rather than an actual video?
 function isThumbnailUrl(url) {
   return (
     url.includes('/plain/') ||
@@ -184,7 +170,6 @@ function isThumbnailUrl(url) {
   );
 }
 
-// Returns { url, isHls, cookies } for the best downloadable video URL on a page, or null.
 export async function getVideoStreamUrl(videoPageUrl) {
   logger.info(`Fetching video page: ${videoPageUrl}`);
   let res;
@@ -195,7 +180,6 @@ export async function getVideoStreamUrl(videoPageUrl) {
     return null;
   }
 
-  // Capture session cookies so we can reuse them for CDN requests
   const setCookies = res.headers['set-cookie'] || [];
   const sessionCookies = [
     ...HEADERS.Cookie.split('; '),
@@ -205,7 +189,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
   const $ = cheerio.load(res.data);
   const allScripts = $('script').map((_, el) => $(el).html() || '').get().join('\n');
 
-  // 1. <source> or <video> tags — direct embed, best case
+  // 1. <source> or <video> tags
   for (const el of $('source[src], video[src]').toArray()) {
     const src = $(el).attr('src') || '';
     if (src.includes('.mp4') || src.includes('.webm')) {
@@ -214,7 +198,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
     }
   }
 
-  // 2. og:video meta — direct embed
+  // 2. og:video meta
   const ogVideo =
     $('meta[property="og:video:secure_url"]').attr('content') ||
     $('meta[property="og:video"]').attr('content');
@@ -223,7 +207,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
     return { url: ogVideo, isHls: false, cookies: sessionCookies };
   }
 
-  // 3. Flashvars: use get_media API to obtain direct IP-bound mp4 URLs
+  // 3. PH flashvars / get_media API
   const fvMatch = allScripts.match(/var\s+flashvars_\w+\s*=\s*(\{[\s\S]*?\});\s*\n/);
   if (fvMatch) {
     try {
@@ -250,7 +234,6 @@ export async function getVideoStreamUrl(videoPageUrl) {
         }
       }
 
-      // Fallback: HLS streams
       const hlsDefs = defs.filter(d => d.format === 'hls' && d.videoUrl);
       const qualityOrder = ['480', '240', '360', '720', '1080'];
       hlsDefs.sort((a, b) => {
@@ -268,7 +251,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
     }
   }
 
-  // 4. Generic "videoUrl" JSON field scan (any site)
+  // 4. Generic "videoUrl" JSON field
   const vuRegex = /"videoUrl"\s*:\s*"([^"]+)"/gi;
   let vuMatch;
   while ((vuMatch = vuRegex.exec(allScripts)) !== null) {
@@ -279,7 +262,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
     }
   }
 
-  // 5. Generic scan for plain .mp4 URLs in scripts
+  // 5. Plain .mp4 URLs in scripts
   const plainMp4 = /https?:\/\/[^\s"'<>\\]+\.mp4/gi;
   for (const match of (allScripts.match(plainMp4) || [])) {
     if (isThumbnailUrl(match)) continue;
@@ -291,22 +274,18 @@ export async function getVideoStreamUrl(videoPageUrl) {
   return null;
 }
 
-// Parse an m3u8 playlist and extract .ts segment URLs (absolute).
+// ── HLS download helpers ──────────────────────────────────────────────────────
+
 function parseM3u8Segments(m3u8Text, baseUrl) {
   const lines = m3u8Text.split('\n').map(l => l.trim()).filter(Boolean);
   const segments = [];
   for (const line of lines) {
     if (line.startsWith('#')) continue;
-    try {
-      segments.push(new URL(line, baseUrl).href);
-    } catch {
-      segments.push(line);
-    }
+    try { segments.push(new URL(line, baseUrl).href); } catch { segments.push(line); }
   }
   return segments;
 }
 
-// Parse a master m3u8 and find the best media playlist URL for a given target quality.
 function parseMasterM3u8(m3u8Text, baseUrl, targetQuality = '480') {
   const lines = m3u8Text.split('\n').map(l => l.trim());
   const streams = [];
@@ -333,7 +312,6 @@ function parseMasterM3u8(m3u8Text, baseUrl, targetQuality = '480') {
   return streams.sort((a, b) => a.bandwidth - b.bandwidth)[0].url;
 }
 
-// Download an HLS stream segment-by-segment via axios.
 async function downloadHlsViaAxios(masterUrl, reqHeaders = HEADERS, maxSegments = 40) {
   const tmpTs = join(tmpdir(), `discord_hls_${Date.now()}.ts`);
   const { createWriteStream } = await import('fs');
@@ -344,10 +322,7 @@ async function downloadHlsViaAxios(masterUrl, reqHeaders = HEADERS, maxSegments 
 
     if (masterRes.data.includes('#EXT-X-STREAM-INF')) {
       mediaUrl = parseMasterM3u8(masterRes.data, masterUrl, '480');
-      if (!mediaUrl) {
-        logger.error('Could not parse master m3u8');
-        return null;
-      }
+      if (!mediaUrl) { logger.error('Could not parse master m3u8'); return null; }
       logger.info(`Media playlist: ${mediaUrl.slice(0, 80)}`);
     } else {
       mediaUrl = masterUrl;
@@ -355,10 +330,7 @@ async function downloadHlsViaAxios(masterUrl, reqHeaders = HEADERS, maxSegments 
 
     const mediaRes = await axios.get(mediaUrl, { headers: reqHeaders, timeout: 10000 });
     const segments = parseM3u8Segments(mediaRes.data, mediaUrl);
-    if (segments.length === 0) {
-      logger.error('No segments found in m3u8');
-      return null;
-    }
+    if (segments.length === 0) { logger.error('No segments found in m3u8'); return null; }
 
     const toDownload = segments.slice(0, maxSegments);
     logger.info(`Downloading ${toDownload.length} of ${segments.length} HLS segments...`);
@@ -398,7 +370,6 @@ async function downloadHlsViaAxios(masterUrl, reqHeaders = HEADERS, maxSegments 
   }
 }
 
-// Remux a .ts file to .mp4 using ffmpeg.
 async function remuxToMp4(tsPath) {
   const mp4Path = tsPath.replace('.ts', '.mp4');
   const args = ['-y', '-i', tsPath, '-c', 'copy', '-movflags', '+faststart', '-loglevel', 'error', mp4Path];
@@ -412,10 +383,10 @@ async function remuxToMp4(tsPath) {
   }
 }
 
-// Path to yt-dlp binary (bundled with the project for portability)
+// ── yt-dlp fallback ───────────────────────────────────────────────────────────
+
 const YTDLP_BIN = new URL('../../bin/yt-dlp', import.meta.url).pathname;
 
-// Try to download a video from a PAGE URL using yt-dlp.
 async function downloadWithYtDlp(videoPageUrl) {
   const tmpPath = join(tmpdir(), `discord_ytdlp_${Date.now()}.mp4`);
   const args = [
@@ -439,14 +410,14 @@ async function downloadWithYtDlp(videoPageUrl) {
       return tmpPath;
     }
   } catch (err) {
-    const detail = err.stderr || err.message || '';
-    logger.error('yt-dlp failed:', detail.slice(0, 200));
+    logger.error('yt-dlp failed:', (err.stderr || err.message || '').slice(0, 200));
   }
   try { await unlink(tmpPath); } catch {}
   return null;
 }
 
-// Download a video clip via stream URL, then yt-dlp as fallback.
+// ── Main download pipeline ────────────────────────────────────────────────────
+
 export async function downloadVideoClip(streamUrl, cookies = '', videoPageUrl = '') {
   const reqHeaders = { ...HEADERS };
   if (cookies) reqHeaders['Cookie'] = cookies;
@@ -454,7 +425,6 @@ export async function downloadVideoClip(streamUrl, cookies = '', videoPageUrl = 
 
   const isHls = streamUrl.includes('.m3u8');
 
-  // --- Method 1: Axios download (direct mp4 or HLS segments) ---
   if (streamUrl && !isHls) {
     const tmpPath = join(tmpdir(), `discord_vid_${Date.now()}.mp4`);
     try {
@@ -505,7 +475,6 @@ export async function downloadVideoClip(streamUrl, cookies = '', videoPageUrl = 
     }
   }
 
-  // --- Method 2: yt-dlp with page URL ---
   if (videoPageUrl) {
     const ytPath = await downloadWithYtDlp(videoPageUrl);
     if (ytPath) return ytPath;

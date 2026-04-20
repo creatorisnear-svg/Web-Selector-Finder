@@ -1,3 +1,4 @@
+import http from 'http';
 import {
   Client,
   GatewayIntentBits,
@@ -21,25 +22,27 @@ if (!TOKEN || !CLIENT_ID) {
   process.exit(1);
 }
 
-// Per-guild website settings: guildId -> searchUrlTemplate
-const guildSettings = new Map();
+// Hardcoded PornHub search URL
+const SEARCH_URL = 'https://www.pornhub.com/video/search?search={query}';
 
 // Temporary search results store: key -> results array
 const pendingResults = new Map();
 
+// ── Health check HTTP server (required by Koyeb) ─────────────────────────────
+const PORT = parseInt(process.env.PORT || '5000', 10);
+const healthServer = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('OK');
+});
+healthServer.listen(PORT, () => {
+  logger.info(`Health check server listening on port ${PORT}`);
+});
+
+// ── Slash commands ────────────────────────────────────────────────────────────
 const commands = [
   new SlashCommandBuilder()
-    .setName('website')
-    .setDescription('Set the website to search for videos')
-    .addStringOption(opt =>
-      opt
-        .setName('url')
-        .setDescription('Search URL with {query} placeholder — e.g. https://example.com/search?q={query}')
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
     .setName('search')
-    .setDescription('Search for videos on the configured website')
+    .setDescription('Search PornHub for videos')
     .addStringOption(opt =>
       opt
         .setName('query')
@@ -83,7 +86,6 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Log unhandled rejections so they show up clearly in Koyeb logs
 process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled rejection:', reason instanceof Error ? reason.stack : reason);
 });
@@ -98,45 +100,14 @@ async function handleInteraction(interaction) {
     const { commandName, guildId } = interaction;
     logger.info(`Command /${commandName} from user ${interaction.user.tag} (guild ${guildId})`);
 
-    // /website
-    if (commandName === 'website') {
-      const url = interaction.options.getString('url');
-
-      if (!url.includes('{query}')) {
-        await interaction.reply({
-          content: '❌ Your URL must contain `{query}` so the bot knows where to put the search term.\nExample: `https://example.com/search?q={query}`',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
-
-      guildSettings.set(guildId, url);
-      logger.info(`Guild ${guildId} set website: ${url}`);
-      await interaction.reply({
-        content: `✅ Website saved! Searches will use:\n\`${url}\``,
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    // /search
     if (commandName === 'search') {
-      const searchUrlTemplate = guildSettings.get(guildId);
-
-      if (!searchUrlTemplate) {
-        await interaction.reply({
-          content: '❌ No website set yet. Use `/website` first.',
-          flags: MessageFlags.Ephemeral
-        });
-        return;
-      }
-
       const query = interaction.options.getString('query');
-      logger.info(`Search query: "${query}" on template: ${searchUrlTemplate}`);
+      logger.info(`Search query: "${query}"`);
       await interaction.deferReply();
 
       let results;
       try {
-        results = await searchVideos(searchUrlTemplate, query);
+        results = await searchVideos(SEARCH_URL, query);
       } catch (err) {
         logger.error('Scrape error:', err.message);
         await interaction.editReply(`❌ Could not fetch results: ${err.message}`);
@@ -145,9 +116,7 @@ async function handleInteraction(interaction) {
 
       if (!results || results.length === 0) {
         logger.warn(`No results found for query: "${query}"`);
-        await interaction.editReply(
-          `❌ No results found for **${query}**.\nTry a different search term, or check your website URL with \`/website\`.`
-        );
+        await interaction.editReply(`❌ No results found for **${query}**. Try a different search term.`);
         return;
       }
 
@@ -233,7 +202,7 @@ async function handleInteraction(interaction) {
     } else {
       logger.warn(`Download failed for: ${picked.url}`);
       await interaction.editReply({
-        content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Couldn't download this video directly (the site may block server-side access). Click the link above to watch.`
+        content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Couldn't download this video directly. Click the link above to watch.`
       });
     }
   }

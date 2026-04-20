@@ -40,6 +40,9 @@ RUN mkdir -p /app/scripts/bin \
 
 ENV NODE_ENV=production
 ENV LOG_LEVEL=info
+ENV PORT=5000
 
-# Discord bots are long-running processes — no HTTP port needed
+# Expose the health check port Koyeb probes
+EXPOSE 5000
+
 CMD ["pnpm", "--filter", "@workspace/scripts", "run", "discord-bot"]
