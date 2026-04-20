@@ -76,9 +76,11 @@ async function searchPornhubViaYtdlp(query) {
         '--playlist-end', '30',
         '--no-warnings',
         '--quiet',
+        '--impersonate', 'chrome',
+        '--add-header', 'Cookie:age_verified=1; ageGate=true; confirm=1',
         searchUrl
       ],
-      { timeout: 30000 }
+      { timeout: 45000 }
     );
     const results = stdout.trim().split('\n').filter(Boolean).map(line => {
       const tab = line.indexOf('\t');
