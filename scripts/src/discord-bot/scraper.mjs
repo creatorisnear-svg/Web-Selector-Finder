@@ -28,37 +28,38 @@ function resolveUrl(href, baseUrl) {
 }
 
 // ── PornHub-specific search scraper ──────────────────────────────────────────
-// Targets only the actual search result list items, not sidebar/recommended links.
+// Scoped strictly to #videoSearchResult to avoid picking up sidebar/recommended videos.
 function scrapePornhub($, pageUrl) {
   const results = [];
   const seen = new Set();
 
-  // PH wraps search results in <li class="pcVideoListItem"> inside #videoSearchResult
-  // Each item has an <a class="linkVideoThumb"> with the URL and title attribute,
-  // and a <span class="title"> containing the display title.
-  const containers = $('li.pcVideoListItem, li.videoBox');
+  // Only look inside the search result container, not the whole page
+  const searchContainer = $('#videoSearchResult');
+  if (searchContainer.length === 0) {
+    logger.warn('PH: #videoSearchResult container not found');
+    return results;
+  }
 
-  containers.each((_, li) => {
+  // Each video is an <li class="pcVideoListItem"> inside the container.
+  // The <a href="/view_video.php?viewkey=..."> has a title="" attribute with the video title.
+  searchContainer.find('li.pcVideoListItem').each((_, li) => {
     if (results.length >= 10) return;
 
-    // Primary link with title
-    const thumbLink = $(li).find('a.linkVideoThumb, a[class*="videoThumb"]').first();
-    const titleLink = $(li).find('.title a, span.title a').first();
-
-    const href = thumbLink.attr('href') || titleLink.attr('href');
+    // The thumbnail anchor has the viewkey URL and the title as an attribute
+    const anchor = $(li).find('a[href*="viewkey"]').first();
+    const href = anchor.attr('href');
     if (!href || seen.has(href)) return;
     seen.add(href);
 
     const fullUrl = resolveUrl(href, pageUrl);
     if (!fullUrl) return;
-    if (!fullUrl.includes('view_video') && !fullUrl.includes('viewkey')) return;
 
-    // Try several title sources in order of reliability
-    const title =
-      thumbLink.attr('title') ||
-      titleLink.text().trim() ||
-      $(li).find('[title]').first().attr('title') ||
-      $(li).find('.title').first().text().trim();
+    // Title is reliably on the anchor's title attribute; fall back to .title span text
+    const title = (
+      anchor.attr('title') ||
+      $(li).find('.title a').first().text().trim() ||
+      $(li).find('span.title').first().text().trim()
+    )?.trim();
 
     if (!title || title.length < 4) return;
 
@@ -68,7 +69,7 @@ function scrapePornhub($, pageUrl) {
     });
   });
 
-  logger.info(`PH-specific scraper found ${results.length} results`);
+  logger.info(`PH-specific scraper found ${results.length} results from #videoSearchResult`);
   return results;
 }
 
