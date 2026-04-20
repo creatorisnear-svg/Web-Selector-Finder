@@ -95,6 +95,12 @@ process.on('uncaughtException', (err) => {
 });
 
 async function handleInteraction(interaction) {
+  // Drop interactions older than 2.5s — their tokens are expired (e.g. delivered after a bot restart)
+  if (Date.now() - interaction.createdTimestamp > 2500) {
+    logger.warn(`Dropping stale interaction (${Date.now() - interaction.createdTimestamp}ms old)`);
+    return;
+  }
+
   // ── Slash commands ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand()) {
     const { commandName, guildId } = interaction;
