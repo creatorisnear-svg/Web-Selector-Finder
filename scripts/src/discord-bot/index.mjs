@@ -112,8 +112,9 @@ async function handleInteraction(interaction) {
       try {
         await interaction.deferReply();
       } catch (err) {
-        if (err.code === 10062) {
-          logger.warn('Stale interaction token on deferReply — user should retry');
+        if (err.code === 10062 || err.code === 40060) {
+          // 10062 = Unknown Interaction (token expired), 40060 = already acknowledged
+          logger.warn(`Skipping duplicate/stale interaction (code ${err.code})`);
           return;
         }
         throw err;

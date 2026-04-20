@@ -73,7 +73,6 @@ async function searchPornhubViaYtdlp(query) {
       [
         '--flat-playlist',
         '--print', '%(title)s\t%(webpage_url)s',
-        '--playlist-end', '30',
         '--no-warnings',
         '--quiet',
         '--impersonate', 'chrome',
@@ -82,10 +81,17 @@ async function searchPornhubViaYtdlp(query) {
       ],
       { timeout: 45000 }
     );
+    const decodeHtml = s => s
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#039;/g, "'")
+      .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
     const results = stdout.trim().split('\n').filter(Boolean).map(line => {
       const tab = line.indexOf('\t');
       if (tab === -1) return null;
-      const title = line.slice(0, tab).trim();
+      const title = decodeHtml(line.slice(0, tab).trim());
       let url = line.slice(tab + 1).trim();
       // Normalize relative or viewkey-only URLs
       if (url && !url.startsWith('http')) {
