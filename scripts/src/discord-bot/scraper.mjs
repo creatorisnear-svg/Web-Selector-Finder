@@ -473,7 +473,7 @@ async function downloadWithYtDlp(videoPageUrl, cookies = '') {
   const cookieStr = cookies || HEADERS.Cookie;
   const args = [
     '--impersonate', 'chrome',
-    '-f', 'bestvideo[height<=480]+bestaudio/best[height<=480]/worst',
+    '-f', 'worstvideo[height>=240]+worstaudio/worst[height>=240]/worst',
     '-o', tmpTemplate,
     '--no-playlist',
     '--merge-output-format', 'mp4',
@@ -519,11 +519,11 @@ async function downloadWithYtDlp(videoPageUrl, cookies = '') {
           '-y', '-i', tmpMp4,
           '-t', String(targetDuration),
           '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-          '-c:v', 'libx264', '-b:v', `${videoBitrateKbps}k`, '-preset', 'fast',
+          '-c:v', 'libx264', '-b:v', `${videoBitrateKbps}k`, '-preset', 'ultrafast',
           '-c:a', 'aac', '-b:a', `${audioBitrateKbps}k`,
           '-movflags', '+faststart',
           '-loglevel', 'error', reencPath
-        ], { timeout: 120000 });
+        ], { timeout: 300000 });
         const { size: reencSize } = await stat(reencPath);
         logger.info(`Re-encoded to ${(reencSize / 1024 / 1024).toFixed(1)}MB`);
         try { await unlink(tmpMp4); } catch {}
