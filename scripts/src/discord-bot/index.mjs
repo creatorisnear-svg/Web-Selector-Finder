@@ -135,7 +135,6 @@ async function handleInteraction(interaction) {
         return;
       }
 
-      logger.info(`Returning ${results.length} results for "${query}"`);
       const top10 = results.slice(0, 10);
 
       const key = `${interaction.user.id}-${Date.now()}`;
