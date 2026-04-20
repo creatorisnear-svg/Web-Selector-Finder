@@ -1,6 +1,7 @@
 import http from 'http';
 import https from 'https';
 import { URL } from 'url';
+import { spawn } from 'child_process';
 import {
   Client,
   GatewayIntentBits,
@@ -53,39 +54,6 @@ function fetchUpstream(raw, extra = {}) {
   });
 }
 
-async function fetchText(raw, extra = {}) {
-  const res = await fetchUpstream(raw, extra);
-  return new Promise((resolve, reject) => {
-    let body = '';
-    res.setEncoding('utf8');
-    res.on('data', c => body += c);
-    res.on('end', () => resolve(body));
-    res.on('error', reject);
-  });
-}
-
-function resolveHlsUrl(line, base) {
-  try { return new URL(line, base).href; } catch { return line; }
-}
-
-function parseMasterPlaylist(text, base) {
-  const lines = text.split('\n').map(l => l.trim());
-  const streams = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
-      const bw = (lines[i].match(/BANDWIDTH=(\d+)/) || [])[1] || '0';
-      const next = lines[i + 1] || '';
-      if (next && !next.startsWith('#')) streams.push({ bw: parseInt(bw), url: resolveHlsUrl(next, base) });
-    }
-  }
-  if (!streams.length) return null;
-  streams.sort((a, b) => a.bw - b.bw);
-  return streams[0].url;
-}
-
-function parseSegments(text, base) {
-  return text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')).map(l => resolveHlsUrl(l, base));
-}
 
 async function handleStreamProxy(req, res) {
   const reqUrl = new URL(req.url, 'http://localhost');
@@ -111,41 +79,39 @@ async function handleStreamProxy(req, res) {
 
   if (isHls) {
     res.writeHead(200, {
-      'Content-Type': 'video/MP2T',
-      'Content-Disposition': 'inline; filename="video.ts"',
+      'Content-Type': 'video/mp4',
+      'Content-Disposition': 'inline; filename="video.mp4"',
       'Cache-Control': 'no-store',
       'Transfer-Encoding': 'chunked',
     });
 
-    try {
-      const masterText = await fetchText(raw, extra);
-      let playlistUrl = raw;
+    // Build ffmpeg headers string for HLS auth
+    const ffHeaders = [
+      `User-Agent: ${PROXY_HEADERS['User-Agent']}`,
+      `Cookie: ${PROXY_HEADERS['Cookie']}`,
+      extra['Referer'] ? `Referer: ${extra['Referer']}` : '',
+    ].filter(Boolean).join('\r\n') + '\r\n';
 
-      if (masterText.includes('#EXT-X-STREAM-INF')) {
-        const variantUrl = parseMasterPlaylist(masterText, raw);
-        if (!variantUrl) { res.end(); return; }
-        playlistUrl = variantUrl;
-      }
+    const ff = spawn('ffmpeg', [
+      '-headers', ffHeaders,
+      '-i', raw,
+      '-t', '75',
+      '-c:v', 'copy',
+      '-c:a', 'copy',
+      '-f', 'mp4',
+      '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+      '-loglevel', 'error',
+      'pipe:1',
+    ]);
 
-      const variantText = playlistUrl === raw ? masterText : await fetchText(playlistUrl, extra);
-      const segments = parseSegments(variantText, playlistUrl).slice(0, 38);
-
-      for (const segUrl of segments) {
-        if (res.destroyed) break;
-        try {
-          const segRes = await fetchUpstream(segUrl, extra);
-          await new Promise((resolve, reject) => {
-            segRes.on('data', chunk => { if (!res.destroyed) res.write(chunk); });
-            segRes.on('end', resolve);
-            segRes.on('error', reject);
-          });
-        } catch { /* skip bad segment */ }
-      }
-      res.end();
-    } catch (err) {
-      logger.error('HLS proxy error:', err.message);
+    ff.stdout.pipe(res);
+    ff.stderr.on('data', d => logger.warn('ffmpeg stderr:', d.toString().slice(0, 200)));
+    ff.on('error', err => {
+      logger.error('ffmpeg spawn error:', err.message);
       if (!res.writableEnded) res.end();
-    }
+    });
+    ff.on('close', () => { if (!res.writableEnded) res.end(); });
+    req.on('close', () => ff.kill('SIGTERM'));
     return;
   }
 
