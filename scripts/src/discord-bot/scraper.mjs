@@ -474,6 +474,7 @@ async function downloadWithYtDlp(videoPageUrl, cookies = '') {
   const args = [
     '--impersonate', 'chrome',
     '-f', 'worstvideo[height>=240]+worstaudio/worst[height>=240]/worst',
+    '--download-sections', '*0-75',
     '-o', tmpTemplate,
     '--no-playlist',
     '--merge-output-format', 'mp4',
