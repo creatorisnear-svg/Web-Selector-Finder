@@ -40,9 +40,9 @@ function scrapePornhub($, pageUrl) {
     return results;
   }
 
-  // Each video is an <li class="pcVideoListItem"> inside the container.
-  // The <a href="/view_video.php?viewkey=..."> has a title="" attribute with the video title.
-  searchContainer.find('li.pcVideoListItem').each((_, li) => {
+  // Real search result items have class "videoBoxesSearch".
+  // Sponsored/promoted slots use different classes (tjListItem, sniperModeEngaged, etc.) — skip them.
+  searchContainer.find('li.videoBoxesSearch').each((_, li) => {
     if (results.length >= 10) return;
 
     // The thumbnail anchor has the viewkey URL and the title as an attribute
