@@ -11,12 +11,13 @@ import {
   MessageFlags
 } from 'discord.js';
 import { searchVideos, getVideoStreamUrl, downloadVideoClip, cleanupClip } from './scraper.mjs';
+import { logger } from './logger.mjs';
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 
 if (!TOKEN || !CLIENT_ID) {
-  console.error('Missing DISCORD_TOKEN or DISCORD_CLIENT_ID environment variables.');
+  logger.error('Missing DISCORD_TOKEN or DISCORD_CLIENT_ID environment variables.');
   process.exit(1);
 }
 
@@ -51,18 +52,18 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 async function registerCommands() {
   try {
-    console.log('Registering slash commands...');
+    logger.info('Registering slash commands...');
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-    console.log('Slash commands registered.');
+    logger.info('Slash commands registered.');
   } catch (err) {
-    console.error('Failed to register commands:', err);
+    logger.error('Failed to register commands:', err.message);
   }
 }
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('clientReady', () => {
-  console.log(`Bot is online as ${client.user.tag}`);
+  logger.info(`Bot is online as ${client.user.tag}`);
 });
 
 // Wrap the whole handler so one bad interaction never crashes the bot
@@ -70,8 +71,7 @@ client.on('interactionCreate', async interaction => {
   try {
     await handleInteraction(interaction);
   } catch (err) {
-    console.error('Interaction error:', err.message);
-    // Attempt to tell the user something went wrong (best-effort)
+    logger.error('Interaction error:', err.message, err.stack);
     try {
       const msg = { content: '❌ Something went wrong. Please try again.', flags: MessageFlags.Ephemeral };
       if (interaction.deferred || interaction.replied) {
@@ -83,10 +83,20 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
+// Log unhandled rejections so they show up clearly in Koyeb logs
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled rejection:', reason instanceof Error ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception:', err.stack || err.message);
+  process.exit(1);
+});
+
 async function handleInteraction(interaction) {
   // ── Slash commands ──────────────────────────────────────────────────────────
   if (interaction.isChatInputCommand()) {
     const { commandName, guildId } = interaction;
+    logger.info(`Command /${commandName} from user ${interaction.user.tag} (guild ${guildId})`);
 
     // /website
     if (commandName === 'website') {
@@ -101,6 +111,7 @@ async function handleInteraction(interaction) {
       }
 
       guildSettings.set(guildId, url);
+      logger.info(`Guild ${guildId} set website: ${url}`);
       await interaction.reply({
         content: `✅ Website saved! Searches will use:\n\`${url}\``,
         flags: MessageFlags.Ephemeral
@@ -120,24 +131,27 @@ async function handleInteraction(interaction) {
       }
 
       const query = interaction.options.getString('query');
+      logger.info(`Search query: "${query}" on template: ${searchUrlTemplate}`);
       await interaction.deferReply();
 
       let results;
       try {
         results = await searchVideos(searchUrlTemplate, query);
       } catch (err) {
-        console.error('Scrape error:', err.message);
+        logger.error('Scrape error:', err.message);
         await interaction.editReply(`❌ Could not fetch results: ${err.message}`);
         return;
       }
 
       if (!results || results.length === 0) {
+        logger.warn(`No results found for query: "${query}"`);
         await interaction.editReply(
           `❌ No results found for **${query}**.\nTry a different search term, or check your website URL with \`/website\`.`
         );
         return;
       }
 
+      logger.info(`Returning ${results.length} results for "${query}"`);
       const top10 = results.slice(0, 10);
 
       const key = `${interaction.user.id}-${Date.now()}`;
@@ -192,15 +206,16 @@ async function handleInteraction(interaction) {
     const picked = results[index];
     pendingResults.delete(key);
 
+    logger.info(`User ${interaction.user.tag} picked: "${picked.title}" — ${picked.url}`);
+
     await interaction.update({
       content: `⏳ Downloading **${picked.title}**... (this may take a few seconds)`,
       components: []
     });
 
-    // Step 1: Find the video stream URL on the page (for our custom downloader)
     const stream = await getVideoStreamUrl(picked.url);
+    logger.info(`Stream result: ${stream ? stream.url?.slice(0, 80) : 'null'}`);
 
-    // Step 2: Download — try axios (fast, for simple sites) then yt-dlp (handles auth, many sites)
     const filePath = await downloadVideoClip(
       stream?.url || '',
       stream?.cookies || '',
@@ -208,7 +223,7 @@ async function handleInteraction(interaction) {
     );
 
     if (filePath) {
-      // Upload the file as a Discord attachment — plays inline
+      logger.info(`Uploading file to Discord: ${filePath}`);
       const attachment = new AttachmentBuilder(filePath, { name: 'video.mp4' });
       await interaction.editReply({
         content: `🎬 **${picked.title}**`,
@@ -216,7 +231,7 @@ async function handleInteraction(interaction) {
       });
       await cleanupClip(filePath);
     } else {
-      // Download failed (CDN block, too large, or unsupported site) — send page link
+      logger.warn(`Download failed for: ${picked.url}`);
       await interaction.editReply({
         content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Couldn't download this video directly (the site may block server-side access). Click the link above to watch.`
       });
