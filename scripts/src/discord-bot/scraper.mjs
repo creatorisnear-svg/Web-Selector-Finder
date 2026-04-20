@@ -4,7 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { stat, unlink, readFile, writeFile, mkdtemp, readdir } from 'fs/promises';
+import { stat, unlink } from 'fs/promises';
 import { logger } from './logger.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -33,7 +33,7 @@ function resolveUrl(href, baseUrl) {
 // Uses PH's official API endpoint — returns clean JSON, no bot detection issues.
 // Fetches 30 results so the relevance filter has enough to pick 10 good ones from.
 async function searchPornhub(query) {
-  // 1. Try WebMasters JSON API (fast, clean — blocked on some server IPs by Cloudflare)
+  // 1. Try PornHub WebMasters JSON API (fast and clean when not IP-blocked)
   try {
     const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=${encodeURIComponent(query)}&page=1&per_page=30&ordering=mostviewed&period=alltime`;
     logger.info(`PH API: ${apiUrl}`);
@@ -44,8 +44,7 @@ async function searchPornhub(query) {
     const isJson = typeof res.data === 'object' && res.data !== null;
     const videos = isJson ? (res.data.videos || []) : [];
     if (!isJson) {
-      const preview = String(res.data).slice(0, 120).replace(/\n/g, ' ');
-      logger.warn(`PH API returned non-JSON (likely Cloudflare block): ${preview}`);
+      logger.warn('PH API returned non-JSON (Cloudflare block) — falling back to xvideos');
     } else {
       logger.info(`PH API returned ${videos.length} videos`);
     }
@@ -59,102 +58,44 @@ async function searchPornhub(query) {
     logger.warn(`PH API error: ${err.message}`);
   }
 
-  // 2. Fallback: yt-dlp search (uses its own PH extractor + cookie/TLS handling)
-  logger.info('PH API blocked — falling back to yt-dlp search');
-  return searchPornhubViaYtdlp(query);
+  // 2. Fallback: xvideos search — not Cloudflare-gated, large library, yt-dlp can download
+  logger.info('Falling back to xvideos search');
+  return searchXvideos(query);
 }
 
-// Netscape-format cookie file content for PH — passes age gate and disables region redirects.
-const PH_COOKIE_FILE_CONTENT = [
-  '# Netscape HTTP Cookie File',
-  '.pornhub.com\tTRUE\t/\tFALSE\t0\tage_verified\t1',
-  '.pornhub.com\tTRUE\t/\tFALSE\t0\tageGate\ttrue',
-  '.pornhub.com\tTRUE\t/\tFALSE\t0\tconfirm\t1',
-  '.pornhub.com\tTRUE\t/\tFALSE\t0\tplatform\tpc',
-].join('\n') + '\n';
-
-async function searchPornhubViaYtdlp(query) {
-  // yt-dlp's PornHub extractor ignores the ?search= param and returns trending/recommended
-  // content instead of actual search results. Instead we use yt-dlp only as a TLS-capable
-  // fetcher (--write-pages) to bypass Cloudflare, then parse #videoSearchResult ourselves.
-  const searchUrl = `https://www.pornhub.com/video/search?search=${encodeURIComponent(query)}`;
-  logger.info(`yt-dlp page fetch: ${searchUrl}`);
-  const tmpDir = await mkdtemp(join(tmpdir(), 'ph_search_'));
-  const cookieFile = join(tmpDir, 'cookies.txt');
+async function searchXvideos(query) {
+  const searchUrl = `https://www.xvideos.com/?k=${encodeURIComponent(query)}`;
+  logger.info(`xvideos search: ${searchUrl}`);
   try {
-    await writeFile(cookieFile, PH_COOKIE_FILE_CONTENT);
-
-    await execFileAsync(
-      YTDLP_BIN,
-      [
-        '--flat-playlist',
-        '--write-pages',
-        '--skip-download',
-        '--playlist-end', '1',
-        '--no-warnings',
-        '--quiet',
-        '--impersonate', 'chrome',
-        '--cookies', cookieFile,
-        searchUrl
-      ],
-      { cwd: tmpDir, timeout: 45000 }
-    );
-
-    // yt-dlp may write several .dump files (e.g. age-gate redirect + search results page).
-    // Scan all of them and use the one that actually contains #videoSearchResult.
-    const files = await readdir(tmpDir);
-    const dumpFiles = files.filter(f => f.endsWith('.dump'));
-    logger.info(`yt-dlp wrote ${dumpFiles.length} page dump(s)`);
-
-    let html = null;
-    for (const f of dumpFiles) {
-      const content = await readFile(join(tmpDir, f), 'utf8');
-      if (content.includes('id="videoSearchResult"')) {
-        html = content;
-        logger.info(`Using dump: ${f}`);
-        break;
-      }
-    }
-
-    if (!html) {
-      // Log a snippet of what we actually got for debugging
-      if (dumpFiles.length > 0) {
-        const sample = await readFile(join(tmpDir, dumpFiles[0]), 'utf8');
-        logger.warn(`No #videoSearchResult in any dump. First dump snippet: ${sample.slice(0, 200).replace(/\n/g, ' ')}`);
-      } else {
-        logger.warn('yt-dlp page fetch: no dump files produced');
-      }
-      return [];
-    }
-
-    // Parse using Cheerio, scoped to #videoSearchResult only
-    const $ = cheerio.load(html);
+    const { data } = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'text/html',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      timeout: 15000
+    });
+    const $ = cheerio.load(data);
     const seen = new Set();
     const results = [];
-    $('#videoSearchResult a[href*="viewkey"][title]').each((_, el) => {
-      const rawTitle = $(el).attr('title') || '';
-      const href = $(el).attr('href') || '';
+    $('.thumb-block').each((_, el) => {
+      if (results.length >= 30) return;
+      const titleEl = $(el).find('.title a');
+      const rawTitle = titleEl.text().trim();
+      const href = $(el).find('a').first().attr('href') || '';
       if (!rawTitle || !href || seen.has(href)) return;
       seen.add(href);
-      const title = rawTitle
-        .replace(/&#039;/g, "'").replace(/&amp;/g, '&').replace(/&quot;/g, '"')
-        .replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim();
-      const url = href.startsWith('http') ? href : `https://www.pornhub.com${href}`;
+      const url = href.startsWith('http') ? href : `https://www.xvideos.com${href}`;
+      // Strip duration suffix like " 14 min" from titles
+      const title = rawTitle.replace(/\s+\d+\s*(min|sec)\s*$/, '').trim();
       if (!title || !url) return;
       results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url });
     });
-
-    logger.info(`yt-dlp page scrape found ${results.length} search results`);
+    logger.info(`xvideos search returned ${results.length} results`);
     return results;
   } catch (err) {
-    logger.error(`yt-dlp search failed: ${(err.stderr || err.message || '').slice(0, 200)}`);
+    logger.error(`xvideos search failed: ${err.message}`);
     return [];
-  } finally {
-    try {
-      const files = await readdir(tmpDir);
-      await Promise.all(files.map(f => unlink(join(tmpDir, f)).catch(() => {})));
-      await import('fs/promises').then(m => m.rmdir(tmpDir)).catch(() => {});
-    } catch {}
   }
 }
 
