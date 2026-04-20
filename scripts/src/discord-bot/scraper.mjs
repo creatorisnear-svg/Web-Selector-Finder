@@ -131,6 +131,39 @@ function scrapeGeneric($, pageUrl) {
   return results;
 }
 
+// ── Relevance filtering ───────────────────────────────────────────────────────
+// Removes spaces/hyphens so "step mom" == "stepmom" and "step-mom" == "stepmom".
+function normalize(s) {
+  return s.toLowerCase().replace(/[\s\-_]+/g, '');
+}
+
+// Returns search tokens expanded with sub-parts of compound words.
+// "stepmom" → ["stepmom", "step", "mom"]  so titles with "stepmother" or "step mom" still match.
+const FAMILY_BREAKS = ['step','mom','dad','son','daughter','mother','father','sister','brother','bro','sis','milf'];
+function queryTokens(query) {
+  const STOP = new Set(['the','and','for','with','that','this','from','but','all','not','are','was']);
+  const base = query.toLowerCase().split(/\W+/).filter(w => w.length >= 3 && !STOP.has(w));
+  const extra = [];
+  for (const token of base) {
+    for (const prefix of FAMILY_BREAKS) {
+      if (token.startsWith(prefix) && token !== prefix) {
+        extra.push(prefix);
+        const rest = token.slice(prefix.length);
+        if (rest.length >= 3) extra.push(rest);
+        break;
+      }
+    }
+  }
+  return [...new Set([...base, ...extra])];
+}
+
+// Check if normalized title contains any query token as a substring.
+function isRelevant(title, queryWords) {
+  if (!queryWords.length) return true;
+  const normTitle = normalize(title);
+  return queryWords.some(w => normTitle.includes(normalize(w)));
+}
+
 // ── Public search entry point ─────────────────────────────────────────────────
 export async function searchVideos(searchUrlTemplate, query) {
   const url = searchUrlTemplate.replace('{query}', encodeURIComponent(query));
@@ -140,17 +173,22 @@ export async function searchVideos(searchUrlTemplate, query) {
   const $ = cheerio.load(data);
 
   const isPornhub = url.includes('pornhub.com');
-
   let results = isPornhub ? scrapePornhub($, url) : [];
 
-  // Fall back to generic scraper if PH-specific found nothing (or for non-PH sites)
   if (results.length === 0) {
     logger.info('Falling back to generic scraper');
     results = scrapeGeneric($, url);
   }
 
-  logger.info(`Returning ${results.length} results for "${query}"`);
-  return results;
+  // Post-filter: drop results whose titles don't contain any query word.
+  // Fall back to unfiltered if the filter is too aggressive (removes everything).
+  const words = queryTokens(query);
+  const relevant = results.filter(r => isRelevant(r.title, words));
+  logger.info(`Relevance filter: ${results.length} → ${relevant.length} results (words: ${JSON.stringify(words)})`);
+  const final = relevant.length > 0 ? relevant : results;
+
+  logger.info(`Returning ${final.length} results for "${query}"`);
+  return final;
 }
 
 // ── Video stream extraction ───────────────────────────────────────────────────
