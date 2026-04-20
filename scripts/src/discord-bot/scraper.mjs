@@ -102,3 +102,61 @@ export async function searchVideos(searchUrlTemplate, query) {
   console.log(`Found ${results.length} results`);
   return results;
 }
+
+export async function getDirectMp4(videoPageUrl) {
+  console.log('Looking for mp4 on:', videoPageUrl);
+  let data;
+  try {
+    const res = await axios.get(videoPageUrl, { headers: HEADERS, timeout: 15000 });
+    data = res.data;
+  } catch (err) {
+    console.error('Failed to fetch video page:', err.message);
+    return null;
+  }
+
+  const $ = cheerio.load(data);
+
+  // 1. <source> or <video> tags with .mp4
+  const fromTag =
+    $('source[src*=".mp4"]').attr('src') ||
+    $('video[src*=".mp4"]').attr('src');
+  if (fromTag) return resolveUrl(fromTag, videoPageUrl);
+
+  // 2. og:video meta tag
+  const ogVideo =
+    $('meta[property="og:video:secure_url"]').attr('content') ||
+    $('meta[property="og:video"]').attr('content');
+  if (ogVideo && ogVideo.includes('.mp4')) return ogVideo;
+
+  // 3. Scan all script tag text for .mp4 URLs
+  const mp4Pattern = /https?:[^"'\s,)]+\.mp4[^"'\s,)]*/gi;
+  let bestMp4 = null;
+  let bestScore = -1;
+
+  $('script').each((_, el) => {
+    const text = $(el).html() || '';
+    const matches = text.match(mp4Pattern) || [];
+    for (const match of matches) {
+      // Prefer higher quality: look for "1080", "720", "480", "hd" in URL
+      let score = 0;
+      if (match.includes('1080')) score = 4;
+      else if (match.includes('720')) score = 3;
+      else if (match.includes('480')) score = 2;
+      else if (match.includes('hd') || match.includes('high')) score = 1;
+      if (score > bestScore) {
+        bestScore = score;
+        bestMp4 = match;
+      } else if (!bestMp4) {
+        bestMp4 = match;
+      }
+    }
+  });
+
+  if (bestMp4) return bestMp4;
+
+  // 4. Scan raw HTML for .mp4 URLs as a last resort
+  const rawMatches = data.match(mp4Pattern);
+  if (rawMatches && rawMatches.length > 0) return rawMatches[0];
+
+  return null;
+}

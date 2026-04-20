@@ -9,7 +9,7 @@ import {
   ActionRowBuilder,
   MessageFlags
 } from 'discord.js';
-import { searchVideos } from './scraper.mjs';
+import { searchVideos, getDirectMp4 } from './scraper.mjs';
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -178,10 +178,25 @@ client.on('interactionCreate', async interaction => {
 
     pendingResults.delete(key);
 
+    // Acknowledge the pick immediately so Discord doesn't time out
     await interaction.update({
-      content: `🎬 **${picked.title}**\n${picked.url}`,
+      content: `⏳ Finding the video file for **${picked.title}**...`,
       components: []
     });
+
+    // Try to extract a direct .mp4 URL from the video page
+    const mp4Url = await getDirectMp4(picked.url);
+
+    if (mp4Url) {
+      await interaction.editReply({
+        content: `🎬 **${picked.title}**\n${mp4Url}`
+      });
+    } else {
+      // Fall back to the page link if no mp4 found
+      await interaction.editReply({
+        content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Could not find a direct video file — this site may load videos with JavaScript. The link above will open the page.`
+      });
+    }
   }
 });
 
