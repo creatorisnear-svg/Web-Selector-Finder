@@ -38,10 +38,11 @@ function getTitle(el, $) {
 const JUNK_TITLE_WORDS = /^(trust|safety|notice|terms|privacy|cookie|about|help|support|contact|legal|dmca|faq|adverti|careers|press|sitemap|accessibility|copyright|report|feedback|language|settings|sign in|log in|sign up|register|subscribe|upgrade|premium|home|back|next|prev|more|less|see all|view all|show all|load more|follow|share|embed|download|playlist|channel|community|forum|blog|news|store|shop|gift|merch|gif|photo|image|album|gallery)$/i;
 
 // URL path segments to skip — non-video pages and non-video media types
-const SKIP_URL_PATTERN = /(login|signup|register|cdn\.|\.jpg|\.jpeg|\.png|\.gif|\.webp|\.svg|\.ico|\/search|\/tag|\/tags|\/category|\/categories|\/channel|\/channels|\/user|\/users|\/profile|\/author|\/page\/|\/feed|\/rss|javascript:|mailto:|#|\/about|\/help|\/support|\/contact|\/legal|\/privacy|\/terms|\/dmca|\/faq|\/advertise|\/careers|\/press|\/sitemap|\/playlist|\/playlists|\/gif|\/gifs|\/photo|\/photos|\/image|\/images|\/album|\/albums|\/gallery|\/galleries|\/collection|\/collections)/i;
+const SKIP_URL_PATTERN = /(login|signup|register|cdn\.|\.jpg|\.jpeg|\.png|\.gif|\.webp|\.svg|\.ico|\/search|\/tag|\/tags|\/category|\/categories|\/channel|\/channels|\/user|\/users|\/profile|\/author|\/page\/|\/feed|\/rss|javascript:|mailto:|#|\/about|\/help|\/support|\/contact|\/legal|\/privacy|\/terms|\/dmca|\/faq|\/advertise|\/careers|\/press|\/sitemap|\/playlist|\/playlists|\/gif|\/gifs|\/photo|\/photos|\/image|\/images|\/album|\/albums|\/gallery|\/galleries|\/collection|\/collections|\/random|\/top$|\/featured$|\/recommended$|\/popular$|\/trending$|\/new$|\/latest$|\/most-|\/best-)/i;
 
 // URL patterns that look like individual video pages
-const VIDEO_PATH_PATTERN = /\/(video|videos|watch|v|embed|clip|view|play|porn|tube|movie|scene)[\/-]|\/(vids?|flv|mp4)\/|\/\d{5,}/i;
+// Covers: /video/123, /watch?v=, /view_video.php, viewkey=, /v/slug, /embed/id, /videos/slug, numeric IDs
+const VIDEO_PATH_PATTERN = /\/(video|videos|watch|v|embed|clip|view_video|play|tube|movie|scene|porn|flv|vids?)[\/-]|\/(watch|embed)\?|viewkey=|[?&]v=|\/\d{4,}[^/]*$|\/(video|videos|vids?)\/[^/?#]{3,}/i;
 
 function isJunkTitle(title) {
   if (!title) return true;
@@ -102,8 +103,6 @@ export async function searchVideos(searchUrlTemplate, query) {
 
       const title = getTitle(el, $);
       if (isJunkTitle(title)) return;
-      // In fallback, require longer title to reduce noise
-      if (title.length < 10) return;
 
       seenHrefs.add(href);
       results.push({
