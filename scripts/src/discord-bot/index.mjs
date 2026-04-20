@@ -1,4 +1,6 @@
 import http from 'http';
+import https from 'https';
+import { URL } from 'url';
 import {
   Client,
   GatewayIntentBits,
@@ -28,11 +30,162 @@ const SEARCH_URL = 'https://www.pornhub.com/video/search?search={query}';
 // Temporary search results store: key -> results array
 const pendingResults = new Map();
 
-// ── Health check HTTP server (required by Koyeb) ─────────────────────────────
+// ── Stream proxy helpers ──────────────────────────────────────────────────────
+const PROXY_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+  'Accept': '*/*',
+  'Accept-Language': 'en-US,en;q=0.5',
+  'Cookie': 'age_verified=1; ageGate=true; confirm=1',
+};
+const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com'];
+
+function isAllowedUrl(raw) {
+  try { return ALLOWED_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; }
+}
+
+function fetchUpstream(raw, extra = {}) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(raw);
+    const lib = parsed.protocol === 'https:' ? https : http;
+    const req = lib.request(raw, { headers: { ...PROXY_HEADERS, ...extra }, method: 'GET' }, resolve);
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function fetchText(raw, extra = {}) {
+  const res = await fetchUpstream(raw, extra);
+  return new Promise((resolve, reject) => {
+    let body = '';
+    res.setEncoding('utf8');
+    res.on('data', c => body += c);
+    res.on('end', () => resolve(body));
+    res.on('error', reject);
+  });
+}
+
+function resolveHlsUrl(line, base) {
+  try { return new URL(line, base).href; } catch { return line; }
+}
+
+function parseMasterPlaylist(text, base) {
+  const lines = text.split('\n').map(l => l.trim());
+  const streams = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+      const bw = (lines[i].match(/BANDWIDTH=(\d+)/) || [])[1] || '0';
+      const next = lines[i + 1] || '';
+      if (next && !next.startsWith('#')) streams.push({ bw: parseInt(bw), url: resolveHlsUrl(next, base) });
+    }
+  }
+  if (!streams.length) return null;
+  streams.sort((a, b) => a.bw - b.bw);
+  return streams[0].url;
+}
+
+function parseSegments(text, base) {
+  return text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')).map(l => resolveHlsUrl(l, base));
+}
+
+async function handleStreamProxy(req, res) {
+  const reqUrl = new URL(req.url, 'http://localhost');
+  const raw = reqUrl.searchParams.get('url');
+  const ref = reqUrl.searchParams.get('ref');
+
+  if (!raw || !isAllowedUrl(raw)) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Missing or disallowed url' }));
+    return;
+  }
+
+  const extra = {};
+  if (ref) {
+    try {
+      const o = new URL(ref);
+      extra['Referer'] = ref;
+      extra['Origin'] = `${o.protocol}//${o.host}`;
+    } catch {}
+  }
+
+  const isHls = raw.includes('.m3u8') || raw.includes('/hls');
+
+  if (isHls) {
+    res.writeHead(200, {
+      'Content-Type': 'video/MP2T',
+      'Content-Disposition': 'inline; filename="video.ts"',
+      'Cache-Control': 'no-store',
+      'Transfer-Encoding': 'chunked',
+    });
+
+    try {
+      const masterText = await fetchText(raw, extra);
+      let playlistUrl = raw;
+
+      if (masterText.includes('#EXT-X-STREAM-INF')) {
+        const variantUrl = parseMasterPlaylist(masterText, raw);
+        if (!variantUrl) { res.end(); return; }
+        playlistUrl = variantUrl;
+      }
+
+      const variantText = playlistUrl === raw ? masterText : await fetchText(playlistUrl, extra);
+      const segments = parseSegments(variantText, playlistUrl).slice(0, 38);
+
+      for (const segUrl of segments) {
+        if (res.destroyed) break;
+        try {
+          const segRes = await fetchUpstream(segUrl, extra);
+          await new Promise((resolve, reject) => {
+            segRes.on('data', chunk => { if (!res.destroyed) res.write(chunk); });
+            segRes.on('end', resolve);
+            segRes.on('error', reject);
+          });
+        } catch { /* skip bad segment */ }
+      }
+      res.end();
+    } catch (err) {
+      logger.error('HLS proxy error:', err.message);
+      if (!res.writableEnded) res.end();
+    }
+    return;
+  }
+
+  // Direct MP4 proxy
+  try {
+    const upRes = await fetchUpstream(raw, extra);
+    if (upRes.statusCode >= 400) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Upstream ${upRes.statusCode}` }));
+      upRes.resume();
+      return;
+    }
+    const headers = {
+      'Content-Type': 'video/mp4',
+      'Content-Disposition': 'inline; filename="video.mp4"',
+      'Cache-Control': 'no-store',
+    };
+    if (upRes.headers['content-length']) headers['Content-Length'] = upRes.headers['content-length'];
+    res.writeHead(upRes.statusCode || 200, headers);
+    upRes.pipe(res);
+    req.on('close', () => upRes.destroy());
+  } catch (err) {
+    logger.error('MP4 proxy error:', err.message);
+    if (!res.headersSent) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+}
+
+// ── HTTP server: health check + stream proxy ──────────────────────────────────
 const PORT = parseInt(process.env.PORT || '5000', 10);
-const healthServer = http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('OK');
+const healthServer = http.createServer(async (req, res) => {
+  const path = (req.url || '/').split('?')[0];
+  if (path === '/api/stream/video.mp4') {
+    await handleStreamProxy(req, res);
+  } else {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('OK');
+  }
 });
 healthServer.listen(PORT, () => {
   logger.info(`Health check server listening on port ${PORT}`);
