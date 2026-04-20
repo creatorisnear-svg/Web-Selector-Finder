@@ -8,10 +8,11 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
-  StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder,
   ActionRowBuilder,
   AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
   MessageFlags
 } from 'discord.js';
 import { searchVideos, getVideoStreamUrl, getDirectMp4Url, downloadVideoClip, cleanupClip } from './scraper.mjs';
@@ -331,8 +332,99 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
+const PAGE_SIZE = 5;
+
+function buildResultsPage(results, page, key, userId) {
+  const totalPages = Math.ceil(results.length / PAGE_SIZE);
+  const start = page * PAGE_SIZE;
+  const pageItems = results.slice(start, start + PAGE_SIZE);
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🔎 Search Results — Page ${page + 1} of ${totalPages}`)
+    .setColor(0x5865F2)
+    .setDescription(
+      pageItems.map((r, i) => {
+        const num = start + i + 1;
+        const dur = r.duration ? ` \`${r.duration}\`` : '';
+        return `**${num}.** ${r.title}${dur}`;
+      }).join('\n\n')
+    )
+    .setFooter({ text: `${results.length} videos found • Pick a number or use the arrows to browse` });
+
+  const selectRow = new ActionRowBuilder().addComponents(
+    pageItems.map((_, i) =>
+      new ButtonBuilder()
+        .setCustomId(`sel:${userId}:${key}:${start + i}`)
+        .setLabel(String(start + i + 1))
+        .setStyle(ButtonStyle.Primary)
+    )
+  );
+
+  const navRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`nav:${userId}:${key}:${page - 1}`)
+      .setLabel('◀ Previous')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === 0),
+    new ButtonBuilder()
+      .setCustomId(`nav:${userId}:${key}:${page + 1}`)
+      .setLabel('Next ▶')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page >= totalPages - 1)
+  );
+
+  return { embeds: [embed], components: [selectRow, navRow] };
+}
+
+async function handleVideoFetch(interaction, picked, isUpdate = true) {
+  const fetchPayload = { content: `⏳ Fetching **${picked.title}**...`, embeds: [], components: [] };
+  if (isUpdate) await interaction.update(fetchPayload);
+  else await interaction.editReply(fetchPayload);
+
+  const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
+
+  let proxyTargetUrl = null;
+  if (STREAM_BASE_URL) {
+    logger.info('Trying yt-dlp direct URL extraction...');
+    proxyTargetUrl = await getDirectMp4Url(picked.url, '');
+  }
+
+  if (STREAM_BASE_URL && proxyTargetUrl) {
+    const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(proxyTargetUrl)}&ref=${encodeURIComponent(picked.url)}`;
+    logger.info(`Using yt-dlp proxy URL: ${proxyUrl.slice(0, 100)}`);
+    await interaction.editReply({ content: `🎬 **${picked.title}**\n${proxyUrl}`, embeds: [], components: [] });
+    return;
+  }
+
+  const stream = await getVideoStreamUrl(picked.url);
+  logger.info(`Stream result: ${stream ? stream.url?.slice(0, 80) : 'null'}`);
+
+  if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
+    const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(stream.url)}&ref=${encodeURIComponent(picked.url)}`;
+    logger.info(`Using scraped MP4 proxy: ${proxyUrl.slice(0, 100)}`);
+    await interaction.editReply({ content: `🎬 **${picked.title}**\n${proxyUrl}`, embeds: [], components: [] });
+    return;
+  }
+
+  logger.info('No proxiable URL found — downloading for upload...');
+  const filePath = await downloadVideoClip(stream?.url || '', stream?.cookies || '', picked.url);
+
+  if (filePath) {
+    logger.info(`Uploading file to Discord: ${filePath}`);
+    const attachment = new AttachmentBuilder(filePath, { name: 'video.mp4' });
+    await interaction.editReply({ content: `🎬 **${picked.title}**`, embeds: [], components: [], files: [attachment] });
+    await cleanupClip(filePath);
+  } else {
+    logger.warn(`Download failed for: ${picked.url}`);
+    await interaction.editReply({
+      content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Couldn't download directly. Click the link to watch.`,
+      embeds: [],
+      components: []
+    });
+  }
+}
+
 async function handleInteraction(interaction) {
-  // Drop interactions older than 2.5s — their tokens are expired (e.g. delivered after a bot restart)
   if (Date.now() - interaction.createdTimestamp > 2500) {
     logger.warn(`Dropping stale interaction (${Date.now() - interaction.createdTimestamp}ms old)`);
     return;
@@ -350,7 +442,6 @@ async function handleInteraction(interaction) {
         await interaction.deferReply();
       } catch (err) {
         if (err.code === 10062 || err.code === 40060) {
-          // 10062 = Unknown Interaction (token expired), 40060 = already acknowledged
           logger.warn(`Skipping duplicate/stale interaction (code ${err.code})`);
           return;
         }
@@ -372,42 +463,25 @@ async function handleInteraction(interaction) {
         return;
       }
 
-      const top10 = results.slice(0, 10);
-
+      const top20 = results.slice(0, 20);
       const key = `${interaction.user.id}-${Date.now()}`;
-      pendingResults.set(key, top10);
+      pendingResults.set(key, top20);
       setTimeout(() => pendingResults.delete(key), 5 * 60 * 1000);
 
-      const select = new StringSelectMenuBuilder()
-        .setCustomId(`pick_video:${interaction.user.id}:${key}`)
-        .setPlaceholder('Choose a video...')
-        .addOptions(
-          top10.map((r, i) =>
-            new StringSelectMenuOptionBuilder()
-              .setLabel(`${i + 1}. ${r.title.slice(0, 97)}`)
-              .setValue(String(i))
-          )
-        );
-
-      const row = new ActionRowBuilder().addComponents(select);
-
-      await interaction.editReply({
-        content: `🔎 **${top10.length} results** for "${query}" — pick one:`,
-        components: [row]
-      });
+      await interaction.editReply(buildResultsPage(top20, 0, key, interaction.user.id));
     }
   }
 
-  // ── Select menu ─────────────────────────────────────────────────────────────
-  if (interaction.isStringSelectMenu()) {
+  // ── Buttons ─────────────────────────────────────────────────────────────────
+  if (interaction.isButton()) {
     const parts = interaction.customId.split(':');
-    if (parts[0] !== 'pick_video') return;
+    const [type, userId, key] = parts;
 
-    const [, userId, key] = parts;
+    if (type !== 'sel' && type !== 'nav') return;
 
     if (interaction.user.id !== userId) {
       await interaction.reply({
-        content: '❌ Only the person who ran `/search` can pick from this menu.',
+        content: '❌ Only the person who ran `/search` can use these buttons.',
         flags: MessageFlags.Ephemeral
       });
       return;
@@ -415,79 +489,22 @@ async function handleInteraction(interaction) {
 
     const results = pendingResults.get(key);
     if (!results) {
-      await interaction.update({
-        content: '❌ This search has expired. Run `/search` again.',
-        components: []
-      });
+      await interaction.update({ content: '❌ This search has expired. Run `/search` again.', embeds: [], components: [] });
       return;
     }
 
-    const index = parseInt(interaction.values[0], 10);
-    const picked = results[index];
-    pendingResults.delete(key);
-
-    logger.info(`User ${interaction.user.tag} picked: "${picked.title}" — ${picked.url}`);
-
-    await interaction.update({
-      content: `⏳ Fetching **${picked.title}**...`,
-      components: []
-    });
-
-    const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
-
-    // Step 1: Try yt-dlp URL extraction — gives a full, direct MP4 CDN URL
-    // This is the most reliable source (yt-dlp knows each site's format).
-    let proxyTargetUrl = null;
-    if (STREAM_BASE_URL) {
-      logger.info('Trying yt-dlp direct URL extraction...');
-      proxyTargetUrl = await getDirectMp4Url(picked.url, '');
-    }
-
-    // Step 2: If yt-dlp found a direct MP4, proxy it (supports range/seeking in Discord)
-    if (STREAM_BASE_URL && proxyTargetUrl) {
-      const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(proxyTargetUrl)}&ref=${encodeURIComponent(picked.url)}`;
-      logger.info(`Using yt-dlp proxy URL: ${proxyUrl.slice(0, 100)}`);
-      await interaction.editReply({
-        content: `🎬 **${picked.title}**\n${proxyUrl}`
-      });
+    if (type === 'nav') {
+      const page = parseInt(parts[3], 10);
+      await interaction.update(buildResultsPage(results, page, key, userId));
       return;
     }
 
-    // Step 3: Fall back to HTML scraping for the stream URL
-    const stream = await getVideoStreamUrl(picked.url);
-    logger.info(`Stream result: ${stream ? stream.url?.slice(0, 80) : 'null'}`);
-
-    if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
-      // Direct MP4 from scraping — proxy it
-      const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(stream.url)}&ref=${encodeURIComponent(picked.url)}`;
-      logger.info(`Using scraped MP4 proxy: ${proxyUrl.slice(0, 100)}`);
-      await interaction.editReply({
-        content: `🎬 **${picked.title}**\n${proxyUrl}`
-      });
-      return;
-    }
-
-    // Step 4: Download and upload directly to Discord
-    logger.info('No proxiable URL found — downloading for upload...');
-    const filePath = await downloadVideoClip(
-      stream?.url || '',
-      stream?.cookies || '',
-      picked.url
-    );
-
-    if (filePath) {
-      logger.info(`Uploading file to Discord: ${filePath}`);
-      const attachment = new AttachmentBuilder(filePath, { name: 'video.mp4' });
-      await interaction.editReply({
-        content: `🎬 **${picked.title}**`,
-        files: [attachment]
-      });
-      await cleanupClip(filePath);
-    } else {
-      logger.warn(`Download failed for: ${picked.url}`);
-      await interaction.editReply({
-        content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Couldn't download this video directly. Click the link above to watch.`
-      });
+    if (type === 'sel') {
+      const index = parseInt(parts[3], 10);
+      const picked = results[index];
+      pendingResults.delete(key);
+      logger.info(`User ${interaction.user.tag} picked: "${picked.title}" — ${picked.url}`);
+      await handleVideoFetch(interaction, picked, true);
     }
   }
 }

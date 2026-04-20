@@ -49,10 +49,24 @@ async function searchPornhub(query) {
       logger.info(`PH API returned ${videos.length} videos`);
     }
     if (videos.length > 0) {
-      return videos.filter(v => v.url && v.title).map(v => ({
-        title: v.title.length > 80 ? v.title.slice(0, 77) + '...' : v.title,
-        url: v.url
-      }));
+      return videos.filter(v => v.url && v.title).map(v => {
+        let duration = null;
+        if (v.duration) {
+          const secs = parseInt(v.duration, 10);
+          if (!isNaN(secs)) {
+            const m = Math.floor(secs / 60);
+            const s = secs % 60;
+            duration = `${m}:${String(s).padStart(2, '0')}`;
+          } else if (typeof v.duration === 'string' && v.duration.includes(':')) {
+            duration = v.duration;
+          }
+        }
+        return {
+          title: v.title.length > 80 ? v.title.slice(0, 77) + '...' : v.title,
+          url: v.url,
+          duration,
+        };
+      });
     }
   } catch (err) {
     logger.warn(`PH API error: ${err.message}`);
@@ -79,17 +93,18 @@ async function searchXvideos(query) {
     const seen = new Set();
     const results = [];
     $('.thumb-block').each((_, el) => {
-      if (results.length >= 30) return;
+      if (results.length >= 20) return;
       const titleEl = $(el).find('.title a');
       const rawTitle = titleEl.text().trim();
       const href = $(el).find('a').first().attr('href') || '';
       if (!rawTitle || !href || seen.has(href)) return;
       seen.add(href);
       const url = href.startsWith('http') ? href : `https://www.xvideos.com${href}`;
-      // Strip duration suffix like " 14 min" from titles
       const title = rawTitle.replace(/\s+\d+\s*(min|sec)\s*$/, '').trim();
       if (!title || !url) return;
-      results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url });
+      const rawDuration = $(el).find('.duration').text().trim() || $(el).find('[class*="duration"]').text().trim() || '';
+      const duration = rawDuration || null;
+      results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration });
     });
     logger.info(`xvideos search returned ${results.length} results`);
     return results;
