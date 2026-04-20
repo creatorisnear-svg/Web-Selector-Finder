@@ -192,13 +192,26 @@ async function handleInteraction(interaction) {
     logger.info(`User ${interaction.user.tag} picked: "${picked.title}" — ${picked.url}`);
 
     await interaction.update({
-      content: `⏳ Downloading **${picked.title}**... (this may take a few seconds)`,
+      content: `⏳ Fetching **${picked.title}**...`,
       components: []
     });
 
     const stream = await getVideoStreamUrl(picked.url);
     logger.info(`Stream result: ${stream ? stream.url?.slice(0, 80) : 'null'}`);
 
+    // Try proxy stream first (instant — no download needed)
+    const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
+    if (STREAM_BASE_URL && stream?.url && !stream.url.includes('.m3u8')) {
+      const proxyUrl = `${STREAM_BASE_URL}/api/stream/video.mp4?url=${encodeURIComponent(stream.url)}&ref=${encodeURIComponent(picked.url)}`;
+      logger.info(`Using proxy stream: ${proxyUrl.slice(0, 100)}`);
+      await interaction.editReply({
+        content: `🎬 **${picked.title}**\n${proxyUrl}`
+      });
+      return;
+    }
+
+    // Fall back to download + upload
+    logger.info('Proxy not available or HLS stream — falling back to download');
     const filePath = await downloadVideoClip(
       stream?.url || '',
       stream?.cookies || '',
