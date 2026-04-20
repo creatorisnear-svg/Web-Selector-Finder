@@ -98,6 +98,7 @@ async function handleStreamProxy(req, res) {
       '-t', '75',
       '-c:v', 'copy',
       '-c:a', 'copy',
+      '-bsf:a', 'aac_adtstoasc',
       '-f', 'mp4',
       '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
       '-loglevel', 'error',
