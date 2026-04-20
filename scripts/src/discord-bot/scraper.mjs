@@ -9,6 +9,8 @@ import { logger } from './logger.mjs';
 
 const execFileAsync = promisify(execFile);
 
+const YTDLP_BIN = new URL('../../bin/yt-dlp', import.meta.url).pathname;
+
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -31,20 +33,71 @@ function resolveUrl(href, baseUrl) {
 // Uses PH's official API endpoint — returns clean JSON, no bot detection issues.
 // Fetches 30 results so the relevance filter has enough to pick 10 good ones from.
 async function searchPornhub(query) {
-  const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=${encodeURIComponent(query)}&page=1&per_page=30&ordering=mostviewed&period=alltime`;
-  logger.info(`PH API: ${apiUrl}`);
-  const res = await axios.get(apiUrl, {
-    headers: { 'Accept': 'application/json', 'User-Agent': HEADERS['User-Agent'] },
-    timeout: 15000
-  });
-  const videos = res.data?.videos || [];
-  logger.info(`PH API returned ${videos.length} videos`);
-  return videos
-    .filter(v => v.url && v.title)
-    .map(v => ({
-      title: v.title.length > 80 ? v.title.slice(0, 77) + '...' : v.title,
-      url: v.url
-    }));
+  // 1. Try WebMasters JSON API (fast, clean — blocked on some server IPs by Cloudflare)
+  try {
+    const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=${encodeURIComponent(query)}&page=1&per_page=30&ordering=mostviewed&period=alltime`;
+    logger.info(`PH API: ${apiUrl}`);
+    const res = await axios.get(apiUrl, {
+      headers: { 'Accept': 'application/json', 'User-Agent': HEADERS['User-Agent'] },
+      timeout: 15000
+    });
+    const isJson = typeof res.data === 'object' && res.data !== null;
+    const videos = isJson ? (res.data.videos || []) : [];
+    if (!isJson) {
+      const preview = String(res.data).slice(0, 120).replace(/\n/g, ' ');
+      logger.warn(`PH API returned non-JSON (likely Cloudflare block): ${preview}`);
+    } else {
+      logger.info(`PH API returned ${videos.length} videos`);
+    }
+    if (videos.length > 0) {
+      return videos.filter(v => v.url && v.title).map(v => ({
+        title: v.title.length > 80 ? v.title.slice(0, 77) + '...' : v.title,
+        url: v.url
+      }));
+    }
+  } catch (err) {
+    logger.warn(`PH API error: ${err.message}`);
+  }
+
+  // 2. Fallback: yt-dlp search (uses its own PH extractor + cookie/TLS handling)
+  logger.info('PH API blocked — falling back to yt-dlp search');
+  return searchPornhubViaYtdlp(query);
+}
+
+async function searchPornhubViaYtdlp(query) {
+  const searchUrl = `https://www.pornhub.com/video/search?search=${encodeURIComponent(query)}`;
+  logger.info(`yt-dlp search: ${searchUrl}`);
+  try {
+    const { stdout } = await execFileAsync(
+      YTDLP_BIN,
+      [
+        '--flat-playlist',
+        '--print', '%(title)s\t%(webpage_url)s',
+        '--playlist-end', '30',
+        '--no-warnings',
+        '--quiet',
+        searchUrl
+      ],
+      { timeout: 30000 }
+    );
+    const results = stdout.trim().split('\n').filter(Boolean).map(line => {
+      const tab = line.indexOf('\t');
+      if (tab === -1) return null;
+      const title = line.slice(0, tab).trim();
+      let url = line.slice(tab + 1).trim();
+      // Normalize relative or viewkey-only URLs
+      if (url && !url.startsWith('http')) {
+        url = url.startsWith('/') ? `https://www.pornhub.com${url}` : null;
+      }
+      if (!title || !url) return null;
+      return { title: title.length > 80 ? title.slice(0, 77) + '...' : title, url };
+    }).filter(Boolean);
+    logger.info(`yt-dlp search returned ${results.length} results`);
+    return results;
+  } catch (err) {
+    logger.error(`yt-dlp search failed: ${(err.stderr || err.message || '').slice(0, 200)}`);
+    return [];
+  }
 }
 
 // ── Generic fallback scraper ──────────────────────────────────────────────────
@@ -403,8 +456,6 @@ async function remuxToMp4(tsPath) {
 }
 
 // ── yt-dlp fallback ───────────────────────────────────────────────────────────
-
-const YTDLP_BIN = new URL('../../bin/yt-dlp', import.meta.url).pathname;
 
 async function downloadWithYtDlp(videoPageUrl) {
   const tmpPath = join(tmpdir(), `discord_ytdlp_${Date.now()}.mp4`);
