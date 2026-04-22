@@ -517,6 +517,12 @@ export async function getVideoStreamUrl(videoPageUrl) {
   const plainMp4 = /https?:\/\/[^\s"'<>\\]+\.mp4/gi;
   for (const match of (allScripts.match(plainMp4) || [])) {
     if (isThumbnailUrl(match)) continue;
+    // xxbrits get_file URLs without a v-acctoken always 403. Skip them so the
+    // caller falls through to yt-dlp instead of returning a broken stream.
+    if (/xxbrits\.com\/get_file/i.test(match) && !/v-acctoken/i.test(match)) {
+      logger.warn('Skipping xxbrits .mp4 without v-acctoken (would 403)');
+      continue;
+    }
     logger.info('Found plain .mp4 URL in script');
     return { url: match, isHls: false, cookies: sessionCookies };
   }
