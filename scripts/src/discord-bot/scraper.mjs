@@ -479,6 +479,20 @@ export async function getVideoStreamUrl(videoPageUrl) {
     }
   }
 
+  // 4b. xxbrits / kt_player style — fields are `video_url` / `video_alt_url`
+  // (with required `?v-acctoken=...` signing token). Prefer 720p (alt) over 480p.
+  // The trailing `/?v-acctoken=...` MUST be kept or the CDN returns 403.
+  const ktAltMatch = allScripts.match(/video_alt_url\s*:\s*['"]([^'"]+\.mp4\/?\?[^'"]+)['"]/);
+  if (ktAltMatch) {
+    logger.info('Found kt_player video_alt_url (HD)');
+    return { url: ktAltMatch[1], isHls: false, cookies: sessionCookies };
+  }
+  const ktMatch = allScripts.match(/video_url\s*:\s*['"]([^'"]+\.mp4\/?\?[^'"]+)['"]/);
+  if (ktMatch) {
+    logger.info('Found kt_player video_url');
+    return { url: ktMatch[1], isHls: false, cookies: sessionCookies };
+  }
+
   // 5. xvideos direct MP4 via html5player.setVideoUrlHigh / setVideoUrlLow
   const xvMp4Match = allScripts.match(/html5player\.setVideoUrl(?:High|Low)\s*\(\s*['"]([^'"]+)['"]\s*\)/i);
   if (xvMp4Match) {

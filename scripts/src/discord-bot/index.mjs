@@ -596,16 +596,36 @@ async function handleInteraction(interaction) {
         return;
       }
 
-      await interaction.editReply(`🔎 Top ${top10.length} results for **${query}** — posting below…`);
+      await interaction.editReply(`🔎 Top ${top10.length} results for **${query}** — fetching playable embeds…`);
 
-      // Send each video as its own message so Discord can unfurl/embed them
-      for (const r of top10) {
-        const src = r.source ? `\`${SOURCE_LABELS[r.source] || r.source}\` ` : '';
-        const dur = r.duration ? ` \`${r.duration}\`` : '';
+      const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
+
+      // Resolve all 10 stream URLs in parallel (skip ones that fail).
+      // Each successful one becomes a short link Discord can unfurl as a video.
+      const resolved = await Promise.all(top10.map(async r => {
         try {
-          await interaction.followUp({ content: `${src}**${r.title}**${dur}\n${r.url}` });
+          const stream = await Promise.race([
+            getVideoStreamUrl(r.url),
+            new Promise(res => setTimeout(() => res(null), 10000)),
+          ]);
+          if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
+            return { item: r, link: createShortLink(stream.url, r.url, r.title) };
+          }
         } catch (err) {
-          logger.warn(`followUp failed for ${r.url}: ${err.message}`);
+          logger.warn(`search20 fetch failed for ${r.url}: ${err.message}`);
+        }
+        // Fallback — page URL won't embed for these sites but at least it's clickable
+        return { item: r, link: r.url };
+      }));
+
+      // Post each as its own message so Discord renders one embed per video
+      for (const { item, link } of resolved) {
+        const src = item.source ? `\`${SOURCE_LABELS[item.source] || item.source}\` ` : '';
+        const dur = item.duration ? ` \`${item.duration}\`` : '';
+        try {
+          await interaction.followUp({ content: `${src}**${item.title}**${dur}\n${link}` });
+        } catch (err) {
+          logger.warn(`followUp failed for ${item.url}: ${err.message}`);
         }
       }
     }
