@@ -27,7 +27,7 @@ if (!TOKEN || !CLIENT_ID) {
 }
 
 // Hardcoded PornHub search URL
-const SEARCH_URL = 'https://www.pornhub.com/video/search?search={query}';
+const SEARCH_URL = '';
 
 // Temporary search results store: key -> { results, query, site }
 const pendingResults = new Map();
@@ -50,7 +50,7 @@ const PROXY_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.5',
   'Cookie': 'age_verified=1; ageGate=true; confirm=1',
 };
-const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com'];
+const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com'];
 
 function isAllowedUrl(raw) {
   try { return ALLOWED_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; }
@@ -330,18 +330,9 @@ healthServer.listen(PORT, () => {
 const commands = [
   new SlashCommandBuilder()
     .setName('search')
-    .setDescription('Search for videos')
+    .setDescription('Search Xvideos, XNXX and XXBrits combined')
     .addStringOption(opt =>
       opt.setName('query').setDescription('What to search for').setRequired(true)
-    )
-    .addStringOption(opt =>
-      opt.setName('site')
-        .setDescription('Which site to search (default: Xvideos/Pornhub)')
-        .setRequired(false)
-        .addChoices(
-          { name: 'Xvideos / Pornhub (default)', value: 'auto' },
-          { name: 'XNXX', value: 'xnxx' },
-        )
     ),
 ].map(cmd => cmd.toJSON());
 
@@ -390,23 +381,25 @@ process.on('uncaughtException', (err) => {
 
 const PAGE_SIZE = 5;
 
-function buildResultsPage(results, page, key, userId, site = 'auto') {
+const SOURCE_LABELS = { xvideos: 'XV', xnxx: 'XNXX', xxbrits: 'XXBrits' };
+
+function buildResultsPage(results, page, key, userId) {
   const totalPages = Math.ceil(results.length / PAGE_SIZE);
   const start = page * PAGE_SIZE;
   const pageItems = results.slice(start, start + PAGE_SIZE);
-  const siteLabel = site === 'xnxx' ? 'XNXX' : 'Xvideos/Pornhub';
 
   const embed = new EmbedBuilder()
     .setTitle(`🔎 Search Results — Page ${page + 1} of ${totalPages}`)
-    .setColor(site === 'xnxx' ? 0xe74c3c : 0x5865F2)
+    .setColor(0x5865F2)
     .setDescription(
       pageItems.map((r, i) => {
         const num = start + i + 1;
         const dur = r.duration ? ` \`${r.duration}\`` : '';
-        return `**${num}.** ${r.title}${dur}`;
+        const src = r.source ? ` \`${SOURCE_LABELS[r.source] || r.source}\`` : '';
+        return `**${num}.**${src} ${r.title}${dur}`;
       }).join('\n\n')
     )
-    .setFooter({ text: `${results.length} videos from ${siteLabel} • Pick a number or browse` });
+    .setFooter({ text: `${results.length} videos from Xvideos + XNXX + XXBrits • Pick a number or browse` });
 
   const selectRow = new ActionRowBuilder().addComponents(
     pageItems.map((_, i) =>
@@ -493,9 +486,9 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
   }
 }
 
-async function runSearch(query, site) {
-  const results = await searchVideos(SEARCH_URL, query, site);
-  return results ? results.slice(0, 20) : [];
+async function runSearch(query) {
+  const results = await searchVideos(SEARCH_URL, query);
+  return results ? results.slice(0, 30) : [];
 }
 
 async function handleInteraction(interaction) {
@@ -511,8 +504,7 @@ async function handleInteraction(interaction) {
 
     if (commandName === 'search') {
       const query = interaction.options.getString('query');
-      const site = interaction.options.getString('site') || 'auto';
-      logger.info(`Search query: "${query}" site: ${site}`);
+      logger.info(`Search query: "${query}"`);
       try {
         await interaction.deferReply();
       } catch (err) {
@@ -525,7 +517,7 @@ async function handleInteraction(interaction) {
 
       let top20;
       try {
-        top20 = await runSearch(query, site);
+        top20 = await runSearch(query);
       } catch (err) {
         logger.error('Scrape error:', err.message);
         await interaction.editReply(`❌ Could not fetch results: ${err.message}`);
@@ -539,10 +531,10 @@ async function handleInteraction(interaction) {
       }
 
       const key = `${interaction.user.id}-${Date.now()}`;
-      pendingResults.set(key, { results: top20, query, site });
+      pendingResults.set(key, { results: top20, query });
       setTimeout(() => pendingResults.delete(key), 5 * 60 * 1000);
 
-      await interaction.editReply(buildResultsPage(top20, 0, key, interaction.user.id, site));
+      await interaction.editReply(buildResultsPage(top20, 0, key, interaction.user.id));
     }
   }
 
@@ -567,11 +559,11 @@ async function handleInteraction(interaction) {
       return;
     }
 
-    const { results, query, site } = stored;
+    const { results, query } = stored;
 
     if (type === 'nav') {
       const page = parseInt(parts[3], 10);
-      await interaction.update(buildResultsPage(results, page, key, userId, site));
+      await interaction.update(buildResultsPage(results, page, key, userId));
       return;
     }
 
@@ -589,7 +581,7 @@ async function handleInteraction(interaction) {
       await interaction.deferUpdate();
       let fresh;
       try {
-        fresh = await runSearch(query, site);
+        fresh = await runSearch(query);
       } catch (err) {
         logger.error('Refresh scrape error:', err.message);
         await interaction.editReply({ content: '❌ Refresh failed. Try `/search` again.', embeds: [], components: [] });
@@ -601,9 +593,9 @@ async function handleInteraction(interaction) {
       }
       const newKey = `${userId}-${Date.now()}`;
       pendingResults.delete(key);
-      pendingResults.set(newKey, { results: fresh, query, site });
+      pendingResults.set(newKey, { results: fresh, query });
       setTimeout(() => pendingResults.delete(newKey), 5 * 60 * 1000);
-      await interaction.editReply(buildResultsPage(fresh, 0, newKey, userId, site));
+      await interaction.editReply(buildResultsPage(fresh, 0, newKey, userId));
     }
   }
 }

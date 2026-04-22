@@ -266,47 +266,91 @@ async function searchXnxx(query) {
   }
 }
 
-// ── Public search entry point ─────────────────────────────────────────────────
-// site: 'auto' (default) | 'xnxx'
-export async function searchVideos(searchUrlTemplate, query, site = 'auto') {
-  if (site === 'xnxx') {
-    const results = await searchXnxx(query);
-    const words = queryTokens(query);
-    results.sort((a, b) => (isRelevant(a.title, words) ? 0 : 1) - (isRelevant(b.title, words) ? 0 : 1));
-    logger.info(`Returning ${results.length} xnxx results for "${query}"`);
-    return results;
-  }
-
-  const url = searchUrlTemplate.replace('{query}', encodeURIComponent(query));
-  const isPornhub = url.includes('pornhub.com');
-
-  let results = [];
-
-  if (isPornhub) {
-    results = await searchPornhub(query);
-    const words = queryTokens(query);
-    results.sort((a, b) => {
-      const aMatch = isRelevant(a.title, words) ? 0 : 1;
-      const bMatch = isRelevant(b.title, words) ? 0 : 1;
-      return aMatch - bMatch;
+// ── XXBrits scraper ──────────────────────────────────────────────────────────
+async function searchXxbrits(query) {
+  const searchUrl = `https://www.xxbrits.com/search/${encodeURIComponent(query)}/`;
+  logger.info(`xxbrits search: ${searchUrl}`);
+  try {
+    const { data } = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'text/html',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      timeout: 15000,
     });
-    logger.info(`Returning ${results.length} results for "${query}"`);
+    const $ = cheerio.load(data);
+    const seen = new Set();
+    const results = [];
+
+    $('a[href*="/videos/"]').each((_, el) => {
+      if (results.length >= 20) return;
+      const url = $(el).attr('href') || '';
+      if (!url.match(/\/videos\/\d+\//) || seen.has(url)) return;
+      const title = ($(el).attr('title') || $(el).find('img').attr('alt') || '').trim();
+      if (!title || title.length < 4) return;
+      seen.add(url);
+
+      // Walk up looking for a sibling .box span containing duration like "12:34"
+      let duration = null;
+      let p = $(el);
+      for (let i = 0; i < 5; i++) {
+        const d = p.find('.box span').first().text().trim();
+        if (d && /^\d+:\d+/.test(d)) { duration = d; break; }
+        p = p.parent();
+      }
+
+      results.push({
+        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+        url,
+        duration,
+      });
+    });
+
+    logger.info(`xxbrits search returned ${results.length} results`);
     return results;
+  } catch (err) {
+    logger.error(`xxbrits search failed: ${err.message}`);
+    return [];
+  }
+}
+
+// ── Public search entry point ─────────────────────────────────────────────────
+// Searches xvideos, xnxx and xxbrits in parallel and interleaves the results so
+// the top of the list is varied across sites.
+export async function searchVideos(_searchUrlTemplate, query) {
+  const [xv, xn, xb] = await Promise.all([
+    searchXvideos(query).catch(e => { logger.warn(`xvideos failed: ${e.message}`); return []; }),
+    searchXnxx(query).catch(e => { logger.warn(`xnxx failed: ${e.message}`); return []; }),
+    searchXxbrits(query).catch(e => { logger.warn(`xxbrits failed: ${e.message}`); return []; }),
+  ]);
+
+  // Tag each result with its source so the UI can show where it came from
+  const tag = (arr, source) => arr.map(r => ({ ...r, source }));
+  const tagged = [tag(xv, 'xvideos'), tag(xn, 'xnxx'), tag(xb, 'xxbrits')];
+
+  // Round-robin interleave so the first page shows results from all sites
+  const interleaved = [];
+  const seen = new Set();
+  let added = true;
+  for (let i = 0; added; i++) {
+    added = false;
+    for (const list of tagged) {
+      if (i < list.length) {
+        const r = list[i];
+        if (!seen.has(r.url)) { seen.add(r.url); interleaved.push(r); }
+        added = true;
+      }
+    }
   }
 
-  logger.info(`Searching: ${url}`);
-  const { data } = await axios.get(url, { headers: HEADERS, timeout: 15000 });
-  const $ = cheerio.load(data);
-  results = scrapeGeneric($, url);
-
-  // Post-filter only for generic scraped results where we grab arbitrary links
-  // off a page and need to check relevance ourselves.
+  // Push relevant results to the top while preserving the round-robin order within each group
   const words = queryTokens(query);
-  const relevant = results.filter(r => isRelevant(r.title, words));
-  logger.info(`Relevance filter: ${results.length} → ${relevant.length} results (words: ${JSON.stringify(words)})`);
-  const final = relevant.length > 0 ? relevant : results;
+  const relevant = interleaved.filter(r => isRelevant(r.title, words));
+  const others = interleaved.filter(r => !isRelevant(r.title, words));
+  const final = [...relevant, ...others];
 
-  logger.info(`Returning ${final.length} results for "${query}"`);
+  logger.info(`Combined search "${query}": xvideos=${xv.length} xnxx=${xn.length} xxbrits=${xb.length} → ${final.length} total`);
   return final;
 }
 
