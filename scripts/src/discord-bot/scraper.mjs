@@ -479,18 +479,19 @@ export async function getVideoStreamUrl(videoPageUrl) {
     }
   }
 
-  // 4b. xxbrits / kt_player style — fields are `video_url` / `video_alt_url`
-  // (with required `?v-acctoken=...` signing token). Prefer 720p (alt) over 480p.
+  // 4b. xxbrits / kt_player style — fields are `video_url` (480p) / `video_alt_url` (720p)
+  // (with required `?v-acctoken=...` signing token).
+  // Prefer 480p — Discord refuses to inline-play videos above ~25MB, and 720p commonly exceeds that.
   // The trailing `/?v-acctoken=...` MUST be kept or the CDN returns 403.
-  const ktAltMatch = allScripts.match(/video_alt_url\s*:\s*['"]([^'"]+\.mp4\/?\?[^'"]+)['"]/);
-  if (ktAltMatch) {
-    logger.info('Found kt_player video_alt_url (HD)');
-    return { url: ktAltMatch[1], isHls: false, cookies: sessionCookies };
-  }
   const ktMatch = allScripts.match(/video_url\s*:\s*['"]([^'"]+\.mp4\/?\?[^'"]+)['"]/);
   if (ktMatch) {
-    logger.info('Found kt_player video_url');
+    logger.info('Found kt_player video_url (480p)');
     return { url: ktMatch[1], isHls: false, cookies: sessionCookies };
+  }
+  const ktAltMatch = allScripts.match(/video_alt_url\s*:\s*['"]([^'"]+\.mp4\/?\?[^'"]+)['"]/);
+  if (ktAltMatch) {
+    logger.info('Found kt_player video_alt_url (HD fallback)');
+    return { url: ktAltMatch[1], isHls: false, cookies: sessionCookies };
   }
 
   // 5. xvideos direct MP4 via html5player.setVideoUrlHigh / setVideoUrlLow
