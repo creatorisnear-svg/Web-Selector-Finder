@@ -50,17 +50,30 @@ const PROXY_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.5',
   'Cookie': 'age_verified=1; ageGate=true; confirm=1',
 };
-const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com'];
+const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com', 'media.xxbrits.com'];
 
 function isAllowedUrl(raw) {
   try { return ALLOWED_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; }
 }
 
-function fetchUpstream(raw, extra = {}) {
+// Follows up to 5 redirects. xxbrits get_file URLs 302 to media.xxbrits.com,
+// and without following them the proxy pipes the empty redirect response to Discord.
+function fetchUpstream(raw, extra = {}, depth = 0) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(raw);
     const lib = parsed.protocol === 'https:' ? https : http;
-    const req = lib.request(raw, { headers: { ...PROXY_HEADERS, ...extra }, method: 'GET' }, resolve);
+    const req = lib.request(raw, { headers: { ...PROXY_HEADERS, ...extra }, method: 'GET' }, res => {
+      const status = res.statusCode || 0;
+      const loc = res.headers['location'];
+      if (status >= 300 && status < 400 && loc && depth < 5) {
+        res.resume();
+        const next = new URL(loc, raw).toString();
+        // Drop Range header on redirect target only if it's a different host (preserve where safe)
+        resolve(fetchUpstream(next, extra, depth + 1));
+        return;
+      }
+      resolve(res);
+    });
     req.on('error', reject);
     req.end();
   });
