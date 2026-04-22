@@ -56,6 +56,39 @@ function isAllowedUrl(raw) {
   try { return ALLOWED_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; }
 }
 
+// Quick HEAD probe to learn the upstream Content-Length, following redirects.
+// Returns the size in bytes, or null if it can't be determined within 5s.
+async function probeContentLength(streamUrl, refUrl) {
+  const headers = {};
+  if (refUrl) {
+    try {
+      const o = new URL(refUrl);
+      headers['Referer'] = refUrl;
+      headers['Origin'] = `${o.protocol}//${o.host}`;
+    } catch {}
+  }
+  // Some CDNs reject HEAD; use a tiny ranged GET instead so we always get Content-Range.
+  headers['Range'] = 'bytes=0-0';
+  try {
+    const res = await Promise.race([
+      fetchUpstream(streamUrl, headers),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('probe timeout')), 5000)),
+    ]);
+    res.resume();
+    const cr = res.headers['content-range'];
+    if (cr) {
+      const m = cr.match(/\/(\d+)$/);
+      if (m) return parseInt(m[1], 10);
+    }
+    const cl = res.headers['content-length'];
+    if (cl) return parseInt(cl, 10);
+    return null;
+  } catch (err) {
+    logger.warn(`probeContentLength failed: ${err.message}`);
+    return null;
+  }
+}
+
 // Follows up to 5 redirects. xxbrits get_file URLs 302 to media.xxbrits.com,
 // and without following them the proxy pipes the empty redirect response to Discord.
 function fetchUpstream(raw, extra = {}, depth = 0) {
@@ -476,10 +509,17 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
   logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
 
   if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
-    const shortUrl = createShortLink(stream.url, picked.url, picked.title);
-    logger.info(`Fast path — short link: ${shortUrl}`);
-    await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
-    return;
+    // Discord won't inline-play videos above ~50MB. Probe the upstream so we know
+    // whether to embed the link or fall through to the download/upload path.
+    const sizeBytes = await probeContentLength(stream.url, picked.url);
+    const MAX_EMBED_BYTES = 50 * 1024 * 1024;
+    if (sizeBytes === null || sizeBytes <= MAX_EMBED_BYTES) {
+      const shortUrl = createShortLink(stream.url, picked.url, picked.title);
+      logger.info(`Fast path — short link: ${shortUrl} (size=${sizeBytes ?? 'unknown'})`);
+      await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
+      return;
+    }
+    logger.warn(`Stream too large to embed (${sizeBytes} bytes) — falling through to upload path`);
   }
 
   // Step 2: Scraper got HLS or nothing — try yt-dlp with a hard timeout so it never hangs.
