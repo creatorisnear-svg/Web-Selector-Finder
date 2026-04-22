@@ -77,8 +77,10 @@ async function searchPornhub(query) {
   return searchXvideos(query);
 }
 
-async function searchXvideos(query) {
-  const searchUrl = `https://www.xvideos.com/?k=${encodeURIComponent(query)}`;
+async function searchXvideos(query, page = 0) {
+  // xvideos uses 0-indexed `p` — page 1 is `p=0`, page 2 is `p=1`, etc.
+  const pageParam = page > 0 ? `&p=${page}` : '';
+  const searchUrl = `https://www.xvideos.com/?k=${encodeURIComponent(query)}${pageParam}`;
   logger.info(`xvideos search: ${searchUrl}`);
   try {
     const { data } = await axios.get(searchUrl, {
@@ -206,8 +208,10 @@ function isRelevant(title, queryWords) {
 }
 
 // ── XNXX scraper ─────────────────────────────────────────────────────────────
-async function searchXnxx(query) {
-  const searchUrl = `https://www.xnxx.com/search/videos/${encodeURIComponent(query)}`;
+async function searchXnxx(query, page = 0) {
+  // xnxx pages are 1-indexed in the path; page 0 = no suffix, page 1 = /1, etc.
+  const pageSuffix = page > 0 ? `/${page}` : '';
+  const searchUrl = `https://www.xnxx.com/search/videos/${encodeURIComponent(query)}${pageSuffix}`;
   logger.info(`xnxx search: ${searchUrl}`);
   try {
     const { data } = await axios.get(searchUrl, {
@@ -267,8 +271,13 @@ async function searchXnxx(query) {
 }
 
 // ── XXBrits scraper ──────────────────────────────────────────────────────────
-async function searchXxbrits(query) {
-  const searchUrl = `https://www.xxbrits.com/search/${encodeURIComponent(query)}/`;
+async function searchXxbrits(query, page = 0) {
+  // xxbrits paginates via AJAX block fetch; from_videos is 1-indexed,
+  // so page 0 = from_videos=1, page 1 = from_videos=2.
+  const fromVideos = page + 1;
+  const searchUrl = fromVideos === 1
+    ? `https://www.xxbrits.com/search/${encodeURIComponent(query)}/`
+    : `https://www.xxbrits.com/search/${encodeURIComponent(query)}/?mode=async&function=get_block&block_id=list_videos_videos_list_search_result&q=${encodeURIComponent(query)}&from_videos=${fromVideos}`;
   logger.info(`xxbrits search: ${searchUrl}`);
   try {
     const { data } = await axios.get(searchUrl, {
@@ -317,12 +326,12 @@ async function searchXxbrits(query) {
 
 // ── Public search entry point ─────────────────────────────────────────────────
 // Searches xvideos, xnxx and xxbrits in parallel and interleaves the results so
-// the top of the list is varied across sites.
-export async function searchVideos(_searchUrlTemplate, query) {
+// the top of the list is varied across sites. `page` is 0-indexed.
+export async function searchVideos(_searchUrlTemplate, query, page = 0) {
   const [xv, xn, xb] = await Promise.all([
-    searchXvideos(query).catch(e => { logger.warn(`xvideos failed: ${e.message}`); return []; }),
-    searchXnxx(query).catch(e => { logger.warn(`xnxx failed: ${e.message}`); return []; }),
-    searchXxbrits(query).catch(e => { logger.warn(`xxbrits failed: ${e.message}`); return []; }),
+    searchXvideos(query, page).catch(e => { logger.warn(`xvideos failed: ${e.message}`); return []; }),
+    searchXnxx(query, page).catch(e => { logger.warn(`xnxx failed: ${e.message}`); return []; }),
+    searchXxbrits(query, page).catch(e => { logger.warn(`xxbrits failed: ${e.message}`); return []; }),
   ]);
 
   // Tag each result with its source so the UI can show where it came from

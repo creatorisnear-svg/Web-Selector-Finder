@@ -334,6 +334,12 @@ const commands = [
     .addStringOption(opt =>
       opt.setName('query').setDescription('What to search for').setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName('search20')
+    .setDescription('Search and post 10 related videos directly into the channel')
+    .addStringOption(opt =>
+      opt.setName('query').setDescription('What to search for').setRequired(true)
+    ),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -383,13 +389,21 @@ const PAGE_SIZE = 5;
 
 const SOURCE_LABELS = { xvideos: 'XV', xnxx: 'XNXX', xxbrits: 'XXBrits' };
 
-function buildResultsPage(results, page, key, userId) {
-  const totalPages = Math.ceil(results.length / PAGE_SIZE);
+function buildResultsPage(results, page, key, userId, exhausted = false) {
+  const loadedPages = Math.ceil(results.length / PAGE_SIZE);
   const start = page * PAGE_SIZE;
   const pageItems = results.slice(start, start + PAGE_SIZE);
 
+  // "Next" is enabled whenever either we have more loaded items OR more pages
+  // can still be fetched from the source sites.
+  const hasMoreLoaded = page < loadedPages - 1;
+  const canFetchMore = !exhausted;
+  const nextEnabled = hasMoreLoaded || canFetchMore;
+
+  const totalLabel = exhausted ? `${loadedPages}` : `${loadedPages}+`;
+
   const embed = new EmbedBuilder()
-    .setTitle(`🔎 Search Results — Page ${page + 1} of ${totalPages}`)
+    .setTitle(`🔎 Search Results — Page ${page + 1} of ${totalLabel}`)
     .setColor(0x5865F2)
     .setDescription(
       pageItems.map((r, i) => {
@@ -399,7 +413,11 @@ function buildResultsPage(results, page, key, userId) {
         return `**${num}.**${src} ${r.title}${dur}`;
       }).join('\n\n')
     )
-    .setFooter({ text: `${results.length} videos from Xvideos + XNXX + XXBrits • Pick a number or browse` });
+    .setFooter({
+      text: exhausted
+        ? `${results.length} videos from Xvideos + XNXX + XXBrits • End of results`
+        : `${results.length}+ videos from Xvideos + XNXX + XXBrits • More load as you browse`
+    });
 
   const selectRow = new ActionRowBuilder().addComponents(
     pageItems.map((_, i) =>
@@ -420,7 +438,7 @@ function buildResultsPage(results, page, key, userId) {
       .setCustomId(`nav:${userId}:${key}:${page + 1}`)
       .setLabel('Next ▶')
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page >= totalPages - 1),
+      .setDisabled(!nextEnabled),
     new ButtonBuilder()
       .setCustomId(`ref:${userId}:${key}`)
       .setLabel('🔄 Refresh')
@@ -486,9 +504,21 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
   }
 }
 
-async function runSearch(query) {
-  const results = await searchVideos(SEARCH_URL, query);
-  return results ? results.slice(0, 30) : [];
+async function runSearch(query, sitePage = 0) {
+  const results = await searchVideos(SEARCH_URL, query, sitePage);
+  return results || [];
+}
+
+// Dedupe by URL while preserving order
+function dedupeByUrl(items) {
+  const seen = new Set();
+  const out = [];
+  for (const r of items) {
+    if (!r || !r.url || seen.has(r.url)) continue;
+    seen.add(r.url);
+    out.push(r);
+  }
+  return out;
 }
 
 async function handleInteraction(interaction) {
@@ -515,26 +545,69 @@ async function handleInteraction(interaction) {
         throw err;
       }
 
-      let top20;
+      let firstBatch;
       try {
-        top20 = await runSearch(query);
+        firstBatch = await runSearch(query, 0);
       } catch (err) {
         logger.error('Scrape error:', err.message);
         await interaction.editReply(`❌ Could not fetch results: ${err.message}`);
         return;
       }
 
-      if (!top20 || top20.length === 0) {
+      if (!firstBatch || firstBatch.length === 0) {
         logger.warn(`No results found for query: "${query}"`);
         await interaction.editReply(`❌ No results found for **${query}**. Try a different search term.`);
         return;
       }
 
+      const results = dedupeByUrl(firstBatch);
       const key = `${interaction.user.id}-${Date.now()}`;
-      pendingResults.set(key, { results: top20, query });
+      pendingResults.set(key, { results, query, lastSitePage: 0, exhausted: false });
       setTimeout(() => pendingResults.delete(key), 5 * 60 * 1000);
 
-      await interaction.editReply(buildResultsPage(top20, 0, key, interaction.user.id));
+      await interaction.editReply(buildResultsPage(results, 0, key, interaction.user.id, false));
+    }
+
+    if (commandName === 'search20') {
+      const query = interaction.options.getString('query');
+      logger.info(`/search20 query: "${query}"`);
+      try {
+        await interaction.deferReply();
+      } catch (err) {
+        if (err.code === 10062 || err.code === 40060) {
+          logger.warn(`Skipping duplicate/stale interaction (code ${err.code})`);
+          return;
+        }
+        throw err;
+      }
+
+      let batch;
+      try {
+        batch = await runSearch(query, 0);
+      } catch (err) {
+        logger.error('Scrape error:', err.message);
+        await interaction.editReply(`❌ Could not fetch results: ${err.message}`);
+        return;
+      }
+
+      const top10 = dedupeByUrl(batch || []).slice(0, 10);
+      if (top10.length === 0) {
+        await interaction.editReply(`❌ No results found for **${query}**.`);
+        return;
+      }
+
+      await interaction.editReply(`🔎 Top ${top10.length} results for **${query}** — posting below…`);
+
+      // Send each video as its own message so Discord can unfurl/embed them
+      for (const r of top10) {
+        const src = r.source ? `\`${SOURCE_LABELS[r.source] || r.source}\` ` : '';
+        const dur = r.duration ? ` \`${r.duration}\`` : '';
+        try {
+          await interaction.followUp({ content: `${src}**${r.title}**${dur}\n${r.url}` });
+        } catch (err) {
+          logger.warn(`followUp failed for ${r.url}: ${err.message}`);
+        }
+      }
     }
   }
 
@@ -559,13 +632,53 @@ async function handleInteraction(interaction) {
       return;
     }
 
-    const { results, query } = stored;
-
     if (type === 'nav') {
       const page = parseInt(parts[3], 10);
-      await interaction.update(buildResultsPage(results, page, key, userId));
+
+      // Fetch more site pages until we have enough results to render this page,
+      // or until the source sites stop returning anything.
+      const needed = (page + 1) * PAGE_SIZE;
+      while (stored.results.length < needed && !stored.exhausted) {
+        // Defer once on the first fetch so we don't time out the interaction
+        if (!interaction.deferred && !interaction.replied) {
+          try { await interaction.deferUpdate(); } catch {}
+        }
+        const nextPage = stored.lastSitePage + 1;
+        logger.info(`Loading more results for "${stored.query}" — site page ${nextPage}`);
+        let more = [];
+        try {
+          more = await runSearch(stored.query, nextPage);
+        } catch (err) {
+          logger.error(`Pagination fetch failed: ${err.message}`);
+          break;
+        }
+        stored.lastSitePage = nextPage;
+        const before = stored.results.length;
+        stored.results = dedupeByUrl([...stored.results, ...more]);
+        const added = stored.results.length - before;
+        logger.info(`Loaded ${more.length} new (${added} after dedupe). Total: ${stored.results.length}`);
+        // If the sites returned nothing new, we're done.
+        if (added === 0) {
+          stored.exhausted = true;
+          break;
+        }
+      }
+
+      const { results, exhausted } = stored;
+      // Clamp page if we ran out of results before reaching it
+      const maxPage = Math.max(0, Math.ceil(results.length / PAGE_SIZE) - 1);
+      const finalPage = Math.min(page, maxPage);
+      const payload = buildResultsPage(results, finalPage, key, userId, exhausted);
+
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(payload);
+      } else {
+        await interaction.update(payload);
+      }
       return;
     }
+
+    const { results, query } = stored;
 
     if (type === 'sel') {
       const index = parseInt(parts[3], 10);
@@ -581,7 +694,7 @@ async function handleInteraction(interaction) {
       await interaction.deferUpdate();
       let fresh;
       try {
-        fresh = await runSearch(query);
+        fresh = await runSearch(query, 0);
       } catch (err) {
         logger.error('Refresh scrape error:', err.message);
         await interaction.editReply({ content: '❌ Refresh failed. Try `/search` again.', embeds: [], components: [] });
@@ -591,11 +704,12 @@ async function handleInteraction(interaction) {
         await interaction.editReply({ content: `❌ No results on refresh for **${query}**.`, embeds: [], components: [] });
         return;
       }
+      const deduped = dedupeByUrl(fresh);
       const newKey = `${userId}-${Date.now()}`;
       pendingResults.delete(key);
-      pendingResults.set(newKey, { results: fresh, query });
+      pendingResults.set(newKey, { results: deduped, query, lastSitePage: 0, exhausted: false });
       setTimeout(() => pendingResults.delete(newKey), 5 * 60 * 1000);
-      await interaction.editReply(buildResultsPage(fresh, 0, newKey, userId));
+      await interaction.editReply(buildResultsPage(deduped, 0, newKey, userId, false));
     }
   }
 }
