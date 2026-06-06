@@ -1,4 +1,4 @@
-modules = ["nodejs-24", "python3", "python3.11"]
+modules = ["nodejs-20", "web"]
 
 [deployment]
 router = "application"
@@ -32,7 +32,7 @@ args = "pnpm --filter @workspace/scripts run discord-bot"
 outputType = "console"
 
 [agent]
-stack = "PNPM_WORKSPACE"
+stack = "BEST_EFFORT_FALLBACK"
 expertMode = true
 
 [postMerge]
