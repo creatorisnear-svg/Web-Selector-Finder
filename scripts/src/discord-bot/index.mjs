@@ -503,14 +503,12 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
 
   const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
 
-  // Step 1: HTML scraper — fast (1-2s), now extracts direct MP4 URLs for xvideos.
-  // If it returns a direct MP4 we proxy it immediately without calling yt-dlp at all.
+  // Step 1: HTML scraper — fast (1-2s), extracts direct MP4/HLS URLs from the page.
   const stream = await getVideoStreamUrl(picked.url);
   logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
 
   if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
-    // Discord won't inline-play videos above ~50MB. Probe the upstream so we know
-    // whether to embed the link or fall through to the download/upload path.
+    // Proxy embed path: create a short link Discord can unfurl into an inline player.
     const sizeBytes = await probeContentLength(stream.url, picked.url);
     const MAX_EMBED_BYTES = 50 * 1024 * 1024;
     if (sizeBytes === null || sizeBytes <= MAX_EMBED_BYTES) {
@@ -519,26 +517,31 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
       await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
       return;
     }
-    logger.warn(`Stream too large to embed (${sizeBytes} bytes) — falling through to upload path`);
+    logger.warn(`Stream too large to embed (${sizeBytes} bytes) — falling through`);
   }
 
-  // Step 2: Scraper got HLS or nothing — try yt-dlp with a hard timeout so it never hangs.
-  if (STREAM_BASE_URL) {
-    logger.info('HLS/no URL — trying yt-dlp (12s timeout)...');
-    const directUrl = await Promise.race([
-      getDirectMp4Url(picked.url, stream?.cookies || ''),
-      new Promise(r => setTimeout(() => r(null), YTDLP_TIMEOUT_MS)),
-    ]);
-    if (directUrl) {
+  // Step 2: Try yt-dlp URL extraction (works regardless of STREAM_BASE_URL).
+  // If STREAM_BASE_URL is set, proxy it via short link. Otherwise send the CDN URL
+  // directly — Discord can embed direct .mp4 CDN links without a proxy.
+  logger.info('Trying yt-dlp URL extraction (12s timeout)...');
+  const directUrl = await Promise.race([
+    getDirectMp4Url(picked.url, stream?.cookies || ''),
+    new Promise(r => setTimeout(() => r(null), YTDLP_TIMEOUT_MS)),
+  ]);
+  if (directUrl) {
+    if (STREAM_BASE_URL) {
       const shortUrl = createShortLink(directUrl, picked.url, picked.title);
       logger.info(`yt-dlp short link: ${shortUrl}`);
       await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
-      return;
+    } else {
+      logger.info(`yt-dlp direct URL (no proxy): ${directUrl.slice(0, 80)}`);
+      await interaction.editReply({ content: `🎬 **${picked.title}**\n${directUrl}`, embeds: [], components: [] });
     }
-    logger.warn('yt-dlp timed out or returned nothing — falling back to download');
+    return;
   }
+  logger.warn('yt-dlp timed out or returned nothing — falling back to download');
 
-  // Step 3: Download and upload directly to Discord as a file.
+  // Step 3: Download and upload directly to Discord as a file attachment.
   logger.info('Downloading clip for upload...');
   const filePath = await downloadVideoClip(stream?.url || '', stream?.cookies || '', picked.url);
 
@@ -547,14 +550,18 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
     const attachment = new AttachmentBuilder(filePath, { name: 'video.mp4' });
     await interaction.editReply({ content: `🎬 **${picked.title}**`, embeds: [], components: [], files: [attachment] });
     await cleanupClip(filePath);
-  } else {
-    logger.warn(`All methods failed for: ${picked.url}`);
-    await interaction.editReply({
-      content: `🎬 **${picked.title}**\n${picked.url}\n\n> ⚠️ Couldn't fetch this video. Click the link to watch.`,
-      embeds: [],
-      components: []
-    });
+    return;
   }
+
+  // Step 4: Last resort — send the best available URL.
+  // Prefer the direct stream URL over the page URL; Discord may be able to embed it.
+  const bestUrl = (stream?.url && !stream.isHls) ? stream.url : picked.url;
+  logger.warn(`All methods failed for: ${picked.url} — sending best URL: ${bestUrl.slice(0, 80)}`);
+  await interaction.editReply({
+    content: `🎬 **${picked.title}**\n${bestUrl}\n\n> ⚠️ Couldn't download this video. Click the link to watch.`,
+    embeds: [],
+    components: []
+  });
 }
 
 async function runSearch(query, sitePage = 0) {
