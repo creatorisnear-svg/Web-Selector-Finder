@@ -259,13 +259,22 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .fon-chip:disabled { opacity: .45; cursor: wait; }
 .fon-chip.fon-active { background: var(--accent); border-color: var(--accent); color: #fff; cursor: default; }
 .fon-thumb-ref {
-  display: flex; align-items: center; gap: .45rem; margin-top: .5rem;
-  font-size: .72rem; color: var(--muted);
+  display: flex; align-items: flex-start; gap: .8rem; margin-top: .5rem;
+  font-size: .72rem; color: var(--muted); flex-wrap: wrap;
 }
+.fon-thumb-block { display: flex; flex-direction: column; gap: .2rem; align-items: center; flex-shrink: 0; }
+.fon-thumb-block span { font-size: .66rem; color: var(--muted); font-weight: 600; }
 .fon-thumb-ref img {
-  width: 64px; aspect-ratio: 16/9; object-fit: cover; border-radius: 4px;
-  border: 1px solid var(--border); flex-shrink: 0;
+  width: 80px; aspect-ratio: 16/9; object-fit: cover; border-radius: 4px;
+  border: 1px solid var(--border);
 }
+.fon-match-badge {
+  display: inline-block; font-size: .65rem; font-weight: 700; border-radius: 4px;
+  padding: 1px 5px; margin-top: .15rem;
+}
+.fon-match-high { background: rgba(46,204,113,.18); color: #2ecc71; border: 1px solid rgba(46,204,113,.35); }
+.fon-match-mid  { background: rgba(241,196,15,.18);  color: #d4a017;  border: 1px solid rgba(241,196,15,.35); }
+.fon-match-low  { background: rgba(231,76,60,.15);   color: #e74c3c;  border: 1px solid rgba(231,76,60,.3);  }
 .fon-status { font-size: .75rem; color: var(--muted); margin-top: .3rem; min-height: 1.1em; }
 
 .vp-right {
@@ -404,8 +413,14 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
         </div>
         <div class="fon-status" id="vp-fon-status"></div>
         <div class="fon-thumb-ref" id="vp-fon-thumb" style="display:none">
-          <img id="vp-fon-thumb-img" src="" alt=""/>
-          <span>Using this thumbnail as reference</span>
+          <div class="fon-thumb-block">
+            <img id="vp-fon-thumb-orig" src="" alt=""/>
+            <span>Original</span>
+          </div>
+          <div class="fon-thumb-block">
+            <img id="vp-fon-thumb-found" src="" alt="" style="display:none"/>
+            <span id="vp-fon-match-label" style="display:none"></span>
+          </div>
         </div>
       </div>
     </div>
@@ -441,10 +456,12 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   var vpVidStatus = document.getElementById('vp-vid-status');
   var vpRelated   = document.getElementById('vp-related');
   var pageLoadBar = document.getElementById('page-loading');
-  var vpFindOn    = document.getElementById('vp-find-on');
-  var vpFonStatus = document.getElementById('vp-fon-status');
-  var vpFonThumb  = document.getElementById('vp-fon-thumb');
-  var vpFonThumbImg = document.getElementById('vp-fon-thumb-img');
+  var vpFindOn       = document.getElementById('vp-find-on');
+  var vpFonStatus    = document.getElementById('vp-fon-status');
+  var vpFonThumb     = document.getElementById('vp-fon-thumb');
+  var vpFonThumbOrig = document.getElementById('vp-fon-thumb-orig');
+  var vpFonThumbFound = document.getElementById('vp-fon-thumb-found');
+  var vpFonMatchLabel = document.getElementById('vp-fon-match-label');
 
   /* ── State ───────────────────────────────────────────────────────────────── */
   var currentQuery  = '';
@@ -854,84 +871,199 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     loadRelated(r);
   }
 
+  /* ── Actor/keyword extraction ────────────────────────────────────────────── */
+  function extractActorsAndKeywords(title) {
+    // Strip leading site-name prefix like "Brazzers - " or "[SiteName] "
+    var clean = title.replace(/^\[[^\]]+\]\s*[-–]?\s*/, '')
+                     .replace(/^[A-Z][A-Za-z0-9]+\s*[-–]\s*/, '');
+
+    // Split on " - " to find distinct segments (sites often separate actors from description this way)
+    var parts = clean.split(/\s+[-–]\s+/);
+    var actors = [];
+    parts.forEach(function(part) {
+      part = part.trim();
+      // A "name" segment: 2-4 words, each starts with uppercase, no numbers, reasonable length
+      var words = part.split(/\s+/);
+      if (words.length >= 2 && words.length <= 4 &&
+          words.every(function(w) { return /^[A-Z][a-zA-Z'-]+$/.test(w) && w.length > 1; })) {
+        actors.push(part);
+      }
+    });
+
+    // Also detect "Name & Name", "Name + Name", "Name feat. Name" patterns in the full title
+    var multiRx = /([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+))\s*(?:&|\+|feat\.?)\s*([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)?)/g;
+    var m;
+    while ((m = multiRx.exec(title)) !== null) {
+      [m[1], m[2]].forEach(function(name) {
+        if (!actors.includes(name)) actors.push(name);
+      });
+    }
+
+    if (actors.length > 0) {
+      // Actor names make the most specific cross-site query
+      return actors.slice(0, 2).join(' ');
+    }
+
+    // Fallback: content keywords
+    return extractKeywords(title);
+  }
+
+  /* ── Canvas thumbnail comparison ─────────────────────────────────────────── */
+  function compareThumbnails(url1, url2) {
+    return new Promise(function(resolve) {
+      var W = 20, H = 11;
+      var canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      var ctx = canvas.getContext('2d');
+
+      function loadImg(url) {
+        return new Promise(function(res, rej) {
+          var img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = function() { res(img); };
+          img.onerror = rej;
+          img.src = url;
+        });
+      }
+
+      function pixels(img) {
+        ctx.clearRect(0, 0, W, H);
+        ctx.drawImage(img, 0, 0, W, H);
+        return ctx.getImageData(0, 0, W, H).data;
+      }
+
+      Promise.all([loadImg(url1), loadImg(url2)])
+        .then(function(imgs) {
+          var d1 = pixels(imgs[0]);
+          var d2 = pixels(imgs[1]);
+          var diff = 0;
+          for (var i = 0; i < d1.length; i += 4) {
+            diff += Math.abs(d1[i] - d2[i]) + Math.abs(d1[i+1] - d2[i+1]) + Math.abs(d1[i+2] - d2[i+2]);
+          }
+          resolve(Math.round((1 - diff / (255 * 3 * W * H)) * 100));
+        })
+        .catch(function() { resolve(null); }); // null = couldn't compare (CORS etc.)
+    });
+  }
+
   /* ── Find this video on another site ────────────────────────────────────── */
   function findOnSite(src, label) {
     if (fonFetching || !currentVideoData) return;
     fonFetching = true;
 
-    // Show thumbnail reference so user knows which video we're looking for
-    if (currentVideoData.thumbnail) {
-      vpFonThumbImg.src = thumbUrl(currentVideoData.thumbnail);
+    // Show original thumbnail reference immediately
+    var origThumbProxied = currentVideoData.thumbnail ? thumbUrl(currentVideoData.thumbnail) : null;
+    if (origThumbProxied) {
+      vpFonThumbOrig.src = origThumbProxied;
+      vpFonThumbFound.style.display = 'none';
+      vpFonMatchLabel.style.display = 'none';
       vpFonThumb.style.display = 'flex';
     }
     vpFonStatus.textContent = 'Searching ' + label + '\u2026';
-
-    // Disable all chips while searching
     vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) { c.disabled = true; });
 
-    var keywords = extractKeywords(currentVideoData.title);
-    var searchQ  = keywords || currentVideoData.title.slice(0, 60);
+    // Use actor names for a much more targeted cross-site search
+    var searchQ = extractActorsAndKeywords(currentVideoData.title) || currentVideoData.title.slice(0, 60);
 
     fetch('/api/search?q=' + _enc(searchQ) + '&source=' + encodeURIComponent(src) + '&page=0')
       .then(function(res) { return res.json(); })
       .then(function(data) {
-        var results = (data.results || []);
+        var results = (data.results || []).slice(0, 6); // compare top 6
         if (!results.length) {
           vpFonStatus.textContent = 'No results found on ' + label + '.';
           vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) { c.disabled = false; });
           fonFetching = false;
           return;
         }
-        // Pick best match — first result is already relevance-sorted
-        var best = results[0];
-        vpFonStatus.textContent = 'Found on ' + label + ': ' + best.title.slice(0, 60) + (best.title.length > 60 ? '\u2026' : '');
 
-        // Swap the current video's URL to the found result and reload player
-        var oldData = currentVideoData;
-        currentVideoData = Object.assign({}, oldData, {
-          url: best.url,
-          source: best.src || src,
-          duration: best.duration || oldData.duration,
-        });
-        vpLink.href = best.url;
+        vpFonStatus.textContent = 'Comparing thumbnails\u2026';
 
-        // Highlight the active chip
-        vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) {
-          c.disabled = false;
-          c.classList.remove('fon-active');
-          if (c.dataset.src === src) c.classList.add('fon-active');
-        });
+        // Thumbnail-compare all candidates, pick the best visual match
+        var candidates = results.filter(function(r) { return !!r.thumbnail; });
+        if (!candidates.length || !origThumbProxied) {
+          // No thumbnails available — fall back to relevance-first
+          pickAndPlay(results[0], null, src, label);
+          return;
+        }
 
-        // Reload the player with the new source
-        vpVid.pause();
-        vpVid.removeAttribute('src');
-        vpVid.load();
-        vpVid.style.display = 'none';
-        vpVidStatus.style.display = 'flex';
-        vpVidStatus.innerHTML = '<div class="spinner"></div><span>Loading from ' + esc(label) + '\u2026</span>';
-
-        fetch('/api/play-url?url=' + encodeURIComponent(best.url))
-          .then(function(res) { return res.json(); })
-          .then(function(d) {
-            fonFetching = false;
-            if (d.playUrl) {
-              vpVid.src = d.playUrl;
-              vpVid.style.display = 'block';
-              vpVidStatus.style.display = 'none';
-              vpVid.play().catch(function() {});
-            } else {
-              vpVidStatus.innerHTML = '<span>Could not play from ' + esc(label) + '. <a href="' + esc(best.url) + '" target="_blank" rel="noopener">Open page</a></span>';
-            }
-          })
-          .catch(function() {
-            fonFetching = false;
-            vpVidStatus.innerHTML = '<span>Failed to load from ' + esc(label) + '.</span>';
+        Promise.all(candidates.map(function(r) {
+          return compareThumbnails(origThumbProxied, thumbUrl(r.thumbnail))
+            .then(function(score) { return { r: r, score: score }; });
+        })).then(function(scored) {
+          // Sort by similarity descending; null scores go last
+          scored.sort(function(a, b) {
+            if (a.score === null && b.score === null) return 0;
+            if (a.score === null) return 1;
+            if (b.score === null) return -1;
+            return b.score - a.score;
           });
+          var best = scored[0];
+          pickAndPlay(best.r, best.score, src, label);
+        });
       })
       .catch(function() {
         vpFonStatus.textContent = 'Search failed. Try again.';
         vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) { c.disabled = false; });
         fonFetching = false;
+      });
+  }
+
+  function pickAndPlay(best, score, src, label) {
+    // Show found thumbnail + similarity badge
+    if (best.thumbnail) {
+      vpFonThumbFound.src = thumbUrl(best.thumbnail);
+      vpFonThumbFound.style.display = 'block';
+      if (score !== null) {
+        var cls = score >= 70 ? 'fon-match-high' : score >= 45 ? 'fon-match-mid' : 'fon-match-low';
+        var emoji = score >= 70 ? '✓' : score >= 45 ? '~' : '?';
+        vpFonMatchLabel.className = 'fon-match-badge ' + cls;
+        vpFonMatchLabel.textContent = emoji + ' ' + score + '% match';
+        vpFonMatchLabel.style.display = 'inline-block';
+      }
+    }
+
+    var shortTitle = best.title.slice(0, 55) + (best.title.length > 55 ? '\u2026' : '');
+    var matchNote = score !== null ? ' (' + score + '% thumbnail match)' : '';
+    vpFonStatus.textContent = 'Found: ' + shortTitle + matchNote;
+
+    var oldData = currentVideoData;
+    currentVideoData = Object.assign({}, oldData, {
+      url: best.url,
+      source: best.src || src,
+      duration: best.duration || oldData.duration,
+      thumbnail: best.thumbnail || oldData.thumbnail,
+    });
+    vpLink.href = best.url;
+
+    vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) {
+      c.disabled = false;
+      c.classList.remove('fon-active');
+      if (c.dataset.src === src) c.classList.add('fon-active');
+    });
+
+    vpVid.pause();
+    vpVid.removeAttribute('src');
+    vpVid.load();
+    vpVid.style.display = 'none';
+    vpVidStatus.style.display = 'flex';
+    vpVidStatus.innerHTML = '<div class="spinner"></div><span>Loading from ' + esc(label) + '\u2026</span>';
+
+    fetch('/api/play-url?url=' + encodeURIComponent(best.url))
+      .then(function(res) { return res.json(); })
+      .then(function(d) {
+        fonFetching = false;
+        if (d.playUrl) {
+          vpVid.src = d.playUrl;
+          vpVid.style.display = 'block';
+          vpVidStatus.style.display = 'none';
+          vpVid.play().catch(function() {});
+        } else {
+          vpVidStatus.innerHTML = '<span>Could not play from ' + esc(label) + '. <a href="' + esc(best.url) + '" target="_blank" rel="noopener">Open page</a></span>';
+        }
+      })
+      .catch(function() {
+        fonFetching = false;
+        vpVidStatus.innerHTML = '<span>Failed to load from ' + esc(label) + '.</span>';
       });
   }
 
