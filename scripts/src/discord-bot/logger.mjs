@@ -10,6 +10,34 @@ const RESET = '\x1b[0m';
 
 const MIN_LEVEL = LEVELS[process.env.LOG_LEVEL?.toLowerCase()] ?? LEVELS.info;
 
+// ── Privacy: redact sensitive strings ─────────────────────────────────────────
+// Replace a search query or user identifier with a short anonymous hash token.
+// Two calls with the same input produce the same token within a process restart,
+// so you can correlate log lines without ever seeing the real content.
+// Example: redact("step mom") → "[#d4e1a2]"
+function fnv1a(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(16).slice(0, 6).padStart(6, '0');
+}
+export function redact(str) {
+  if (!str) return '[empty]';
+  return `[#${fnv1a(String(str))}]`;
+}
+
+// Redact a URL: keep only the hostname, drop the path/query (which may contain search terms).
+export function redactUrl(raw) {
+  try {
+    const u = new URL(raw);
+    return `${u.hostname}/…`;
+  } catch {
+    return '[url]';
+  }
+}
+
 function formatArg(arg) {
   if (arg instanceof Error) return `${arg.message}${arg.stack ? '\n' + arg.stack : ''}`;
   if (typeof arg === 'object' && arg !== null) {

@@ -20,7 +20,7 @@ import {
   TextInputStyle,
 } from 'discord.js';
 import { searchVideos, getVideoStreamUrl, getDirectMp4Url, downloadVideoClip, cleanupClip, getTrending } from './scraper.mjs';
-import { logger } from './logger.mjs';
+import { logger, redact, redactUrl } from './logger.mjs';
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -466,6 +466,9 @@ const healthServer = http.createServer(async (req, res) => {
       // Tell browsers not to guess MIME types (prevents content sniffing)
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Resource-Policy': 'same-origin',
+      // Force HTTPS forever — ISP cannot downgrade to plaintext HTTP
+      // max-age=1 year; remove includeSubDomains/preload if this server has subdomains with HTTP
+      'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
     });
     res.end(WEB_UI_HTML);
     return;
@@ -708,7 +711,7 @@ async function handleVideoFetch(interaction, key, picked, restorePage) {
 
   // Step 1: HTML scraper
   const stream = await getVideoStreamUrl(picked.url);
-  logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
+  logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${redactUrl(stream.url || '')}` : 'null'}`);
 
   // Build a short /v/:id proxy link — clean URL, Discord embed bot unfurls OG tags into inline player.
   function buildPlayUrl(cdnUrl) {
@@ -720,7 +723,7 @@ async function handleVideoFetch(interaction, key, picked, restorePage) {
     if (stream.isHls) {
       const playUrl = buildPlayUrl(stream.url);
       if (playUrl) {
-        logger.info(`HLS play URL: ${playUrl.slice(0, 80)}…`);
+        logger.info(`HLS play URL: ${redactUrl(playUrl)}`);
         await interaction.followUp({ content: `🎬 **${picked.title}**\n${playUrl}` });
         sent = true;
       }
@@ -839,7 +842,7 @@ async function handleInteraction(interaction) {
   // ── /search slash command — search directly using the autocomplete query ─────
   if (interaction.isChatInputCommand() && interaction.commandName === 'search') {
     const query = interaction.options.getString('query', true).trim();
-    logger.info(`/search "${query}" from ${interaction.user.tag}`);
+    logger.info(`/search ${redact(query)} from ${redact(interaction.user.tag)}`);
     await runSearchInteraction(interaction, query);
     return;
   }
@@ -848,7 +851,7 @@ async function handleInteraction(interaction) {
   if (interaction.isModalSubmit() && interaction.customId.startsWith('searchmodal:')) {
     const query = interaction.fields.getTextInputValue('query').trim();
     if (!query) { await interaction.reply({ content: '❌ Please enter a search term.', flags: MessageFlags.Ephemeral }); return; }
-    logger.info(`Modal search: "${query}" from ${interaction.user.tag}`);
+    logger.info(`Modal search: ${redact(query)} from ${redact(interaction.user.tag)}`);
     await runSearchInteraction(interaction, query);
     return;
   }
@@ -899,7 +902,7 @@ async function handleInteraction(interaction) {
       const index = parseInt(parts[3], 10);
       const picked = stored.results[index];
       const restorePage = stored.currentPage || 0;
-      logger.info(`User ${interaction.user.tag} picked: "${picked.title}" — ${picked.url}`);
+      logger.info(`User ${redact(interaction.user.tag)} picked result from ${redactUrl(picked.url)}`);
       await handleVideoFetch(interaction, key, picked, restorePage);
       return;
     }
@@ -915,7 +918,7 @@ async function handleInteraction(interaction) {
           try { await interaction.deferUpdate(); } catch {}
         }
         const nextPage = stored.lastSitePage + 1;
-        logger.info(`Loading more for "${stored.query}" — site page ${nextPage}`);
+        logger.info(`Loading more for ${redact(stored.query)} — site page ${nextPage}`);
         let more = [];
         try { more = await searchVideos(SEARCH_URL, stored.query, nextPage); } catch (err) { logger.error(`Pagination failed: ${err.message}`); break; }
         stored.lastSitePage = nextPage;

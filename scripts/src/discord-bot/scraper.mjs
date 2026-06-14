@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { stat, unlink } from 'fs/promises';
-import { logger } from './logger.mjs';
+import { logger, redact, redactUrl } from './logger.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -54,7 +54,7 @@ async function searchPornhub(query, page = 0) {
   try {
     const phPage = page + 1;
     const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=${encodeURIComponent(query)}&page=${phPage}&per_page=30&ordering=mostviewed&period=alltime`;
-    logger.info(`PH API: ${apiUrl}`);
+    logger.info(`PH API: search ${redact(query)} p${phPage}`);
     const res = await axios.get(apiUrl, {
       headers: { 'Accept': 'application/json', 'User-Agent': HEADERS['User-Agent'] },
       timeout: 15000
@@ -105,7 +105,7 @@ async function searchXvideos(query, page = 0) {
   // xvideos uses 0-indexed `p` — page 1 is `p=0`, page 2 is `p=1`, etc.
   const pageParam = page > 0 ? `&p=${page}` : '';
   const searchUrl = `https://www.xvideos.com/?k=${encodeURIComponent(query)}${pageParam}`;
-  logger.info(`xvideos search: ${searchUrl}`);
+  logger.info(`xvideos search: ${redact(query)} p${page}`);
   try {
     const { data } = await axios.get(searchUrl, {
       headers: {
@@ -237,7 +237,7 @@ async function searchXnxx(query, page = 0) {
   // xnxx pages are 1-indexed in the path; page 0 = no suffix, page 1 = /1, etc.
   const pageSuffix = page > 0 ? `/${page}` : '';
   const searchUrl = `https://www.xnxx.com/search/videos/${encodeURIComponent(query)}${pageSuffix}`;
-  logger.info(`xnxx search: ${searchUrl}`);
+  logger.info(`xnxx search: ${redact(query)} p${page}`);
   try {
     const { data } = await axios.get(searchUrl, {
       headers: {
@@ -306,7 +306,7 @@ async function searchXxbrits(query, page = 0) {
   const searchUrl = fromVideos === 1
     ? `https://www.xxbrits.com/search/${encodeURIComponent(query)}/`
     : `https://www.xxbrits.com/search/${encodeURIComponent(query)}/?mode=async&function=get_block&block_id=list_videos_videos_list_search_result&q=${encodeURIComponent(query)}&from_videos=${fromVideos}`;
-  logger.info(`xxbrits search: ${searchUrl}`);
+  logger.info(`xxbrits search: ${redact(query)} p${page}`);
   try {
     const { data } = await axios.get(searchUrl, {
       headers: {
@@ -361,7 +361,7 @@ async function searchFpoxxx(query, page = 0) {
   const searchUrl = pageNum === 1
     ? `https://www.fpo.xxx/?s=${encodeURIComponent(query)}`
     : `https://www.fpo.xxx/page/${pageNum}/?s=${encodeURIComponent(query)}`;
-  logger.info(`fpo.xxx search: ${searchUrl}`);
+  logger.info(`fpo.xxx search: ${redact(query)} p${page}`);
   try {
     const { data } = await axios.get(searchUrl, {
       headers: { 'User-Agent': HEADERS['User-Agent'], 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' },
@@ -410,7 +410,7 @@ async function searchFreepornvideos(query, page = 0) {
   // Page 0 = no page param, page 1+ = &page=N (1-indexed so page+1)
   const pageParam = page > 0 ? `&page=${page + 1}` : '';
   const searchUrl = `https://www.freepornvideos.xxx/search/?q=${encodeURIComponent(query)}${pageParam}`;
-  logger.info(`freepornvideos search: ${searchUrl}`);
+  logger.info(`freepornvideos search: ${redact(query)} p${page}`);
   try {
     const { data } = await axios.get(searchUrl, {
       headers: {
@@ -524,7 +524,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
       const tagged = results.map(r => ({ ...r, source }));
       const relevant = tagged.filter(r => isRelevant(r.title, words));
       const others = tagged.filter(r => !isRelevant(r.title, words));
-      logger.info(`Single-source "${source}" search "${query}" page ${page}: ${results.length} results`);
+      logger.info(`Single-source "${source}" search ${redact(query)} p${page}: ${results.length} results`);
       return [...relevant, ...others];
     }
   }
@@ -569,7 +569,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
   const others = deduped.filter(r => !isRelevant(r.title, words));
   const final = [...relevant, ...others];
 
-  logger.info(`Combined search "${query}" page ${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} → ${final.length} (after dedup) total`);
+  logger.info(`Combined search ${redact(query)} p${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} → ${final.length} (after dedup)`);
   return final;
 }
 
@@ -629,7 +629,7 @@ function isThumbnailUrl(url) {
 }
 
 export async function getVideoStreamUrl(videoPageUrl) {
-  logger.info(`Fetching video page: ${videoPageUrl}`);
+  logger.info(`Fetching video page: ${redactUrl(videoPageUrl)}`);
   let res;
   try {
     res = await axios.get(videoPageUrl, { headers: HEADERS, timeout: 15000 });
@@ -707,7 +707,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
       });
       if (hlsDefs.length > 0) {
         const url = unescapeUrl(hlsDefs[0].videoUrl);
-        logger.info(`HLS fallback ${hlsDefs[0].quality}: ${url.slice(0, 80)}`);
+        logger.info(`HLS fallback ${hlsDefs[0].quality}: ${redactUrl(url)}`);
         return { url, isHls: true, cookies: sessionCookies };
       }
     } catch (e) {
@@ -747,7 +747,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
     const mp4Url = unescapeUrl(xvMp4Match[1]);
     const resolved = resolveUrl(mp4Url, videoPageUrl);
     if (resolved) {
-      logger.info(`Found xvideos direct MP4 URL: ${resolved.slice(0, 80)}`);
+      logger.info(`Found xvideos direct MP4 URL: ${redactUrl(resolved)}`);
       return { url: resolved, isHls: false, cookies: sessionCookies };
     }
   }
@@ -756,7 +756,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
   const xvHlsMatch = allScripts.match(/html5player\.setVideoHLS\s*\(\s*['"]([^'"]+)['"]\s*\)/i);
   if (xvHlsMatch) {
     const hlsUrl = unescapeUrl(xvHlsMatch[1]);
-    logger.info(`Found xvideos HLS URL: ${hlsUrl.slice(0, 80)}`);
+    logger.info(`Found xvideos HLS URL: ${redactUrl(hlsUrl)}`);
     return { url: hlsUrl, isHls: true, cookies: sessionCookies };
   }
 
