@@ -445,96 +445,73 @@ async function searchXxbrits(query, page = 0) {
 }
 
 // ── FPoxxx scraper ────────────────────────────────────────────────────────────
+// fpo.xxx search URL: /search/{query}/
+// Pagination: AJAX block fetch with from_videos={n}&from_albums={n} (1-indexed page number)
+// Video containers: div.item inside #list_videos_videos_list_search_result_items
+// Structure: <div class="item"><a href="https://www.fpo.xxx/video/.../" title="...">
+//              <img data-original="..."><span class="duration">MM:SS</span>
+//            </a><strong class="title">...</strong></div>
 async function searchFpoxxx(query, page = 0) {
-  const pageNum = page + 1;
-  // fpo.xxx supports both /?s= and /search/ — use /?s= which is more reliable
-  const searchUrl = pageNum === 1
-    ? `https://www.fpo.xxx/?s=${encodeURIComponent(query)}`
-    : `https://www.fpo.xxx/page/${pageNum}/?s=${encodeURIComponent(query)}`;
-  logger.info(`fpo.xxx search: ${redact(query)} p${page}`);
+  const qEnc = encodeURIComponent(query);
+  const fromPage = page + 1; // 1-indexed
+
+  // Page 1: plain search page. Page 2+: AJAX block fetch (same engine as xxbrits)
+  const searchUrl = fromPage === 1
+    ? `https://www.fpo.xxx/search/${qEnc}/`
+    : `https://www.fpo.xxx/search/${qEnc}/?mode=async&function=get_block&block_id=list_videos_videos_list_search_result&q=${qEnc}&from_videos=${fromPage}&from_albums=${fromPage}`;
+
+  logger.info(`fpo.xxx search: ${redact(query)} p${page} → ${fromPage === 1 ? 'html' : 'ajax'}`);
+
   try {
     const { data } = await axios.get(searchUrl, {
       headers: {
         'User-Agent': HEADERS['User-Agent'],
-        'Accept': 'text/html',
+        'Accept': 'text/html, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         'Cookie': 'age_verified=1',
+        ...(fromPage > 1 ? { 'X-Requested-With': 'XMLHttpRequest', 'Referer': `https://www.fpo.xxx/search/${qEnc}/` } : {}),
       },
       timeout: 15000,
     });
+
     const $ = cheerio.load(data);
     const seen = new Set();
     const results = [];
 
-    // fpo.xxx uses a WordPress-based theme — video containers are typically
-    // <article>, .video-thumb, .videos-list-item, .clip, .item, .thumb
-    // We cast a wide net and then filter by whether the link goes to fpo.xxx
-    const containerSel = [
-      'article',
-      '.video-thumb',
-      '.videos-list-item',
-      '.clip',
-      '.item',
-      '.thumb',
-      '.video-item',
-      '.thumb-block',
-      'li.video',
-      '[class*="video-"]',
-    ].join(', ');
+    // Target the search results container specifically to avoid picking up
+    // sidebar / featured / "most recent" blocks that appear on every page.
+    // On page 1 the container is #list_videos_videos_list_search_result_items;
+    // on AJAX responses the entire payload is just the items fragment.
+    const container = $('#list_videos_videos_list_search_result_items');
+    const scope = container.length ? container : $.root();
 
-    $(containerSel).each((_, el) => {
+    scope.find('div.item').each((_, el) => {
       if (results.length >= 20) return;
-      // Find the primary video link — prefer links that look like video page URLs
-      let anchor = $(el).find('a[href*="fpo.xxx"]').first();
-      if (!anchor.length) anchor = $(el).find('a[href]').first();
+      const anchor = $(el).find('a[href*="/video/"]').first();
       const rawUrl = anchor.attr('href') || '';
       if (!rawUrl || seen.has(rawUrl)) return;
-
-      // Accept relative paths and fpo.xxx absolute URLs; skip other external links
-      const isFpo = rawUrl.includes('fpo.xxx') || rawUrl.startsWith('/');
-      if (!isFpo) return;
-
-      // Skip non-video pages (categories, tags, etc.)
-      if (/\/(category|tag|page|search|author|feed)\//i.test(rawUrl)) return;
 
       const url = rawUrl.startsWith('http') ? rawUrl : `https://www.fpo.xxx${rawUrl}`;
       seen.add(rawUrl);
 
+      // Title: prefer anchor title attr (already clean), fall back to <strong class="title">
       const title = (
-        $(el).find('.entry-title, h2, h3, .title, [class*="title"], .video-title').first().text().trim() ||
         anchor.attr('title') ||
+        $(el).find('strong.title, .title').first().text() ||
         $(el).find('img').first().attr('alt') || ''
       ).replace(/\s+/g, ' ').trim();
       if (!title || title.length < 4) return;
 
-      const durText = $(el).find('.duration, .time, .runtime, [class*="dur"], .video-duration').first().text().trim();
+      const duration = $(el).find('span.duration').first().text().trim() || null;
       const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
 
       results.push({
         title: title.length > 80 ? title.slice(0, 77) + '...' : title,
         url,
-        duration: durText || null,
+        duration,
         thumbnail,
       });
     });
-
-    // If the container approach found nothing, fall back to scanning all fpo.xxx links
-    if (results.length === 0) {
-      logger.info('fpo.xxx container selectors found nothing — trying link scan fallback');
-      $('a[href*="fpo.xxx"]').each((_, el) => {
-        if (results.length >= 20) return;
-        const rawUrl = $(el).attr('href') || '';
-        if (!rawUrl || seen.has(rawUrl)) return;
-        if (/\/(category|tag|page|search|author|feed|wp-content)\//i.test(rawUrl)) return;
-        // Must look like a video page (slug with at least one path segment that isn't a known nav page)
-        if (!rawUrl.match(/fpo\.xxx\/[^/]{5,}\/?$/)) return;
-        seen.add(rawUrl);
-        const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text()).replace(/\s+/g, ' ').trim();
-        if (!title || title.length < 4) return;
-        const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
-        results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url: rawUrl, duration: null, thumbnail });
-      });
-    }
 
     logger.info(`fpoxxx search returned ${results.length} results`);
     return results;
