@@ -412,6 +412,25 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 
   /* ── State ───────────────────────────────────────────────────────────────── */
   var currentQuery  = '';
+  var _sid          = null; // session fingerprint — set on first API response
+
+  /* ── Session-key mismatch guard ──────────────────────────────────────────────
+     If the server restarts the obfuscation key changes. Any open tab will then
+     send queries encoded with the old key and get back garbage. Detect this by
+     comparing the sid token in every API response. If it changes, reload once
+     (sessionStorage prevents a reload loop if the new server also returns 0).  */
+  function _checkSid(data) {
+    if (!data || !data.sid) return;
+    if (!_sid) { _sid = data.sid; return; }
+    if (_sid !== data.sid) {
+      if (!sessionStorage.getItem('_sid_reloaded')) {
+        sessionStorage.setItem('_sid_reloaded', '1');
+        location.reload();
+      }
+    } else {
+      sessionStorage.removeItem('_sid_reloaded');
+    }
+  }
 
   /* ── Query obfuscation ───────────────────────────────────────────────────────
      _K is injected by the server at serve time (see index.mjs).
@@ -499,7 +518,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   function loadSuggestions(q) {
     fetch('/api/suggestions?q=' + _enc(q))
       .then(function(r) { return r.json(); })
-      .then(function(d) { renderAC(d.suggestions || []); })
+      .then(function(d) { _checkSid(d); renderAC(d.suggestions || []); })
       .catch(function() {});
   }
 
@@ -578,6 +597,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     fetch(url)
       .then(function(r) { return r.json(); })
       .then(function(data) {
+        _checkSid(data);
         isFetching = false;
         searchBtn.disabled = false;
         pageLoadBar.classList.remove('active');

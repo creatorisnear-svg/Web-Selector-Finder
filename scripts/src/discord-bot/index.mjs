@@ -304,6 +304,9 @@ async function handleVideoStream(req, res) {
 // Because the key only lives in memory and is never written anywhere, logs from
 // past sessions are permanently undecodable — even to someone with the source code.
 const _SESSION_KEY = [...randomBytes(16)]; // e.g. [183, 42, 7, …] — different every restart
+// Short fingerprint included in every API response so the browser can detect a
+// server restart and reload the page to pick up the new obfuscation key.
+const _SID = _SESSION_KEY.slice(0, 4).map(b => b.toString(16).padStart(2, '0')).join('');
 function _dec(encoded) {
   if (!encoded) return '';
   try {
@@ -352,7 +355,7 @@ const healthServer = http.createServer(async (req, res) => {
     try {
       const results = await searchVideos('', q, page, source);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ results, page }));
+      res.end(JSON.stringify({ results, page, sid: _SID }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Search failed' }));
@@ -383,7 +386,7 @@ const healthServer = http.createServer(async (req, res) => {
       ? POPULAR_SEARCHES.filter(s => s.includes(q)).slice(0, 8)
       : POPULAR_SEARCHES.slice(0, 8);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ suggestions: matches }));
+    res.end(JSON.stringify({ suggestions: matches, sid: _SID }));
     return;
   }
 

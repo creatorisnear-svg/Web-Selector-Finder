@@ -225,11 +225,31 @@ function queryTokens(query) {
   return [...new Set([...base, ...extra])];
 }
 
-// Check if normalized title contains any query token as a substring.
-function isRelevant(title, queryWords) {
-  if (!queryWords.length) return true;
+// Returns a relevance score [0, 1] — fraction of query words found in title.
+// e.g. query "step mom blowjob" (3 tokens), title "step mom" → 2/3 ≈ 0.67
+// e.g. query "teen" (1 token), title "busty teen" → 1/1 = 1.0
+function relevanceScore(title, queryWords) {
+  if (!queryWords.length) return 1;
   const normTitle = normalize(title);
-  return queryWords.some(w => normTitle.includes(normalize(w)));
+  const matched = queryWords.filter(w => normTitle.includes(normalize(w))).length;
+  return matched / queryWords.length;
+}
+
+// Kept for single-word / general queries where any match counts.
+function isRelevant(title, queryWords) {
+  return relevanceScore(title, queryWords) > 0;
+}
+
+// Sort results by relevance score (descending), preserving site-interleave order
+// within equal-score groups. For specific queries (2+ tokens) zero-score results
+// are dropped. For general/short queries they're kept as a fallback.
+function sortByRelevance(results, queryWords) {
+  const isSpecific = queryWords.length >= 2;
+  const scored = results.map(r => ({ ...r, _score: relevanceScore(r.title, queryWords) }));
+  const filtered = isSpecific ? scored.filter(r => r._score > 0) : scored;
+  // Stable sort: higher score first; ties preserve round-robin interleave order
+  filtered.sort((a, b) => b._score - a._score);
+  return filtered.map(({ _score, ...r }) => r); // strip internal _score field
 }
 
 // ── XNXX scraper ─────────────────────────────────────────────────────────────
@@ -522,10 +542,8 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
       const results = await fn(query, page).catch(e => { logger.warn(`${source} failed: ${e.message}`); return []; });
       const words = queryTokens(query);
       const tagged = results.map(r => ({ ...r, source }));
-      const relevant = tagged.filter(r => isRelevant(r.title, words));
-      const others = tagged.filter(r => !isRelevant(r.title, words));
       logger.info(`Single-source "${source}" search ${redact(query)} p${page}: ${results.length} results`);
-      return [...relevant, ...others];
+      return sortByRelevance(tagged, words);
     }
   }
 
@@ -563,13 +581,11 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
   // Deduplicate: if two results have the same title, keep the longer-duration one
   const deduped = dedupByDuration(interleaved);
 
-  // Push relevant results to the top while preserving order within each group
+  // Score and sort: higher relevance first, zero-matches dropped for specific queries
   const words = queryTokens(query);
-  const relevant = deduped.filter(r => isRelevant(r.title, words));
-  const others = deduped.filter(r => !isRelevant(r.title, words));
-  const final = [...relevant, ...others];
+  const final = sortByRelevance(deduped, words);
 
-  logger.info(`Combined search ${redact(query)} p${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} → ${final.length} (after dedup)`);
+  logger.info(`Combined search ${redact(query)} p${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} → ${final.length} (after dedup+score)`);
   return final;
 }
 
