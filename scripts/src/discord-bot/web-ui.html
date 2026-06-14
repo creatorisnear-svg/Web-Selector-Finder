@@ -244,6 +244,30 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   font-size: .72rem; color: #2ecc71; opacity: .85;
 }
 
+/* ── Find on site ─────────────────────────────────────────────────────────── */
+.find-on-wrap {
+  margin-top: .7rem; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+}
+.find-on-label { font-size: .73rem; color: var(--muted); font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.fon-chip {
+  border: 1px solid var(--border); border-radius: 20px; background: var(--surface2);
+  color: var(--text); cursor: pointer; font-size: .71rem; font-weight: 600;
+  padding: .24rem .62rem; white-space: nowrap; transition: all .15s; flex-shrink: 0;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.fon-chip:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.fon-chip:disabled { opacity: .45; cursor: wait; }
+.fon-chip.fon-active { background: var(--accent); border-color: var(--accent); color: #fff; cursor: default; }
+.fon-thumb-ref {
+  display: flex; align-items: center; gap: .45rem; margin-top: .5rem;
+  font-size: .72rem; color: var(--muted);
+}
+.fon-thumb-ref img {
+  width: 64px; aspect-ratio: 16/9; object-fit: cover; border-radius: 4px;
+  border: 1px solid var(--border); flex-shrink: 0;
+}
+.fon-status { font-size: .75rem; color: var(--muted); margin-top: .3rem; min-height: 1.1em; }
+
 .vp-right {
   flex: 0 0 35%; display: flex; flex-direction: column; overflow: hidden;
 }
@@ -375,6 +399,14 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#2ecc71" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           Video &amp; thumbnails stream through this server — your IP is hidden from the video site.
         </div>
+        <div class="find-on-wrap" id="vp-find-on" style="display:none">
+          <span class="find-on-label">Find on:</span>
+        </div>
+        <div class="fon-status" id="vp-fon-status"></div>
+        <div class="fon-thumb-ref" id="vp-fon-thumb" style="display:none">
+          <img id="vp-fon-thumb-img" src="" alt=""/>
+          <span>Using this thumbnail as reference</span>
+        </div>
       </div>
     </div>
     <div class="vp-right">
@@ -409,6 +441,10 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   var vpVidStatus = document.getElementById('vp-vid-status');
   var vpRelated   = document.getElementById('vp-related');
   var pageLoadBar = document.getElementById('page-loading');
+  var vpFindOn    = document.getElementById('vp-find-on');
+  var vpFonStatus = document.getElementById('vp-fon-status');
+  var vpFonThumb  = document.getElementById('vp-fon-thumb');
+  var vpFonThumbImg = document.getElementById('vp-fon-thumb-img');
 
   /* ── State ───────────────────────────────────────────────────────────────── */
   var currentQuery  = '';
@@ -447,13 +483,15 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     } catch(e) { return encodeURIComponent(s); }
   }
 
-  var currentPage   = 0;
-  var maxKnownPage  = 0;
-  var hasNextPage   = false;
-  var currentSource = 'all';
-  var acTimer       = null;
-  var acFocusIdx    = -1;
-  var isFetching    = false;
+  var currentPage     = 0;
+  var maxKnownPage    = 0;
+  var hasNextPage     = false;
+  var currentSource   = 'all';
+  var acTimer         = null;
+  var acFocusIdx      = -1;
+  var isFetching      = false;
+  var currentVideoData = null; // video currently shown in video page
+  var fonFetching     = false; // guard against double-clicks on find-on chips
 
   var BADGE = {
     pornhub:        { cls: 'badge badge-pornhub',        label: 'PH'      },
@@ -746,7 +784,38 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   }
 
   /* ── Video page ──────────────────────────────────────────────────────────── */
+  var ALL_SITES = [
+    { src: 'pornhub',        label: 'PornHub'        },
+    { src: 'xvideos',        label: 'Xvideos'        },
+    { src: 'xnxx',           label: 'XNXX'           },
+    { src: 'xxbrits',        label: 'XXBrits'        },
+    { src: 'fpoxxx',         label: 'FPoxxx'         },
+    { src: 'freepornvideos', label: 'FreePornVideos' },
+  ];
+
+  function buildFindOnChips(currentSrc) {
+    // Reset container — keep the label span, replace the chips
+    while (vpFindOn.children.length > 1) vpFindOn.removeChild(vpFindOn.lastChild);
+    ALL_SITES.forEach(function(site) {
+      var btn = document.createElement('button');
+      btn.className = 'fon-chip' + (site.src === currentSrc ? ' fon-active' : '');
+      btn.textContent = site.label;
+      btn.dataset.src = site.src;
+      if (site.src === currentSrc) {
+        btn.title = 'Currently playing from this site';
+      } else {
+        btn.addEventListener('click', function() { findOnSite(site.src, site.label); });
+      }
+      vpFindOn.appendChild(btn);
+    });
+    vpFindOn.style.display = 'flex';
+    vpFonStatus.textContent = '';
+    vpFonThumb.style.display = 'none';
+  }
+
   function openVideoPage(r) {
+    currentVideoData = r;
+    fonFetching = false;
     var b = BADGE[r.source] || { cls: 'badge badge-xvideos', label: r.source || '' };
     vpTitle.textContent    = r.title;
     vpTopTitle.textContent = r.title;
@@ -763,6 +832,8 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     vpVid.pause();
     vpVid.removeAttribute('src');
     vpVid.load();
+
+    buildFindOnChips(r.source);
 
     fetch('/api/play-url?url=' + encodeURIComponent(r.url))
       .then(function(res) { return res.json(); })
@@ -781,6 +852,87 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
       });
 
     loadRelated(r);
+  }
+
+  /* ── Find this video on another site ────────────────────────────────────── */
+  function findOnSite(src, label) {
+    if (fonFetching || !currentVideoData) return;
+    fonFetching = true;
+
+    // Show thumbnail reference so user knows which video we're looking for
+    if (currentVideoData.thumbnail) {
+      vpFonThumbImg.src = thumbUrl(currentVideoData.thumbnail);
+      vpFonThumb.style.display = 'flex';
+    }
+    vpFonStatus.textContent = 'Searching ' + label + '\u2026';
+
+    // Disable all chips while searching
+    vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) { c.disabled = true; });
+
+    var keywords = extractKeywords(currentVideoData.title);
+    var searchQ  = keywords || currentVideoData.title.slice(0, 60);
+
+    fetch('/api/search?q=' + _enc(searchQ) + '&source=' + encodeURIComponent(src) + '&page=0')
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        var results = (data.results || []);
+        if (!results.length) {
+          vpFonStatus.textContent = 'No results found on ' + label + '.';
+          vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) { c.disabled = false; });
+          fonFetching = false;
+          return;
+        }
+        // Pick best match — first result is already relevance-sorted
+        var best = results[0];
+        vpFonStatus.textContent = 'Found on ' + label + ': ' + best.title.slice(0, 60) + (best.title.length > 60 ? '\u2026' : '');
+
+        // Swap the current video's URL to the found result and reload player
+        var oldData = currentVideoData;
+        currentVideoData = Object.assign({}, oldData, {
+          url: best.url,
+          source: best.src || src,
+          duration: best.duration || oldData.duration,
+        });
+        vpLink.href = best.url;
+
+        // Highlight the active chip
+        vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) {
+          c.disabled = false;
+          c.classList.remove('fon-active');
+          if (c.dataset.src === src) c.classList.add('fon-active');
+        });
+
+        // Reload the player with the new source
+        vpVid.pause();
+        vpVid.removeAttribute('src');
+        vpVid.load();
+        vpVid.style.display = 'none';
+        vpVidStatus.style.display = 'flex';
+        vpVidStatus.innerHTML = '<div class="spinner"></div><span>Loading from ' + esc(label) + '\u2026</span>';
+
+        fetch('/api/play-url?url=' + encodeURIComponent(best.url))
+          .then(function(res) { return res.json(); })
+          .then(function(d) {
+            fonFetching = false;
+            if (d.playUrl) {
+              vpVid.src = d.playUrl;
+              vpVid.style.display = 'block';
+              vpVidStatus.style.display = 'none';
+              vpVid.play().catch(function() {});
+            } else {
+              vpVidStatus.innerHTML = '<span>Could not play from ' + esc(label) + '. <a href="' + esc(best.url) + '" target="_blank" rel="noopener">Open page</a></span>';
+            }
+          })
+          .catch(function() {
+            fonFetching = false;
+            vpVidStatus.innerHTML = '<span>Failed to load from ' + esc(label) + '.</span>';
+          });
+      })
+      .catch(function() {
+        vpFonStatus.textContent = 'Search failed. Try again.';
+        vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) { c.disabled = false; });
+        fonFetching = false;
+      });
   }
 
   function loadRelated(r) {

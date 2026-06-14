@@ -612,11 +612,39 @@ function dedupByDuration(results) {
       const newSecs = parseDurSecs(r.duration);
       const oldSecs = parseDurSecs(existing.duration);
       if (newSecs > oldSecs) {
-        // Replace with the longer-duration version
         output[existingIdx] = { ...r };
-        logger.info(`Dedup: replaced "${existing.title}" (${existing.duration}/${existing.source}) with longer "${r.title}" (${r.duration}/${r.source})`);
+        logger.info(`Dedup(title): replaced "${existing.title}" (${existing.duration}/${existing.source}) with longer "${r.title}" (${r.duration}/${r.source})`);
       }
-      // else keep existing
+    }
+  }
+
+  return output;
+}
+
+// Secondary dedup pass: if two results share the exact same thumbnail path
+// (same CDN image = same video clip), keep only the longer-duration one.
+// Uses the URL pathname so query-string variations don't fool it.
+function dedupByThumbnail(results) {
+  const thumbMap = new Map(); // normPath → index in output array
+  const output = [];
+
+  for (const r of results) {
+    if (!r.thumbnail) { output.push(r); continue; }
+    let normPath;
+    try { normPath = new URL(r.thumbnail).pathname; } catch { normPath = r.thumbnail; }
+
+    const existingIdx = thumbMap.get(normPath);
+    if (existingIdx === undefined) {
+      thumbMap.set(normPath, output.length);
+      output.push(r);
+    } else {
+      const existing = output[existingIdx];
+      const newSecs = parseDurSecs(r.duration);
+      const oldSecs = parseDurSecs(existing.duration);
+      if (newSecs > oldSecs) {
+        output[existingIdx] = { ...r };
+        logger.info(`Dedup(thumb): replaced "${existing.title}" (${existing.duration}/${existing.source}) with longer "${r.title}" (${r.duration}/${r.source})`);
+      }
     }
   }
 
@@ -674,8 +702,8 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     }
   }
 
-  // Deduplicate: if two results have the same title, keep the longer-duration one
-  const deduped = dedupByDuration(interleaved);
+  // Deduplicate: by title first, then by thumbnail (same image = same clip across sites)
+  const deduped = dedupByThumbnail(dedupByDuration(interleaved));
 
   // Score and sort: higher relevance first, zero-matches dropped for specific queries
   const words = queryGroups(query);
