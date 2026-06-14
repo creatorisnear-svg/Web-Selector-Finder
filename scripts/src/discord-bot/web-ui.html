@@ -23,6 +23,13 @@ header {
   position: sticky; top: 0; z-index: 50;
 }
 header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-spacing: -.01em; }
+.privacy-badge {
+  margin-left: auto; display: flex; align-items: center; gap: .3rem;
+  font-size: .72rem; font-weight: 600; color: #2ecc71;
+  background: rgba(46,204,113,.12); border: 1px solid rgba(46,204,113,.25);
+  border-radius: 20px; padding: .22rem .6rem; cursor: default; flex-shrink: 0;
+  user-select: none;
+}
 
 /* ── Search area ──────────────────────────────────────────────────────────── */
 .search-area { max-width: 780px; margin: 1.5rem auto 0; padding: 0 .85rem; }
@@ -227,6 +234,15 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .vp-info-meta { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
 .vp-info-meta a { color: var(--accent); font-size: .82rem; text-decoration: none; }
 .vp-info-meta a:hover { text-decoration: underline; }
+.ext-warn {
+  font-size: .65rem; font-weight: 700; background: rgba(231,76,60,.18);
+  color: #e74c3c; border: 1px solid rgba(231,76,60,.3); border-radius: 3px;
+  padding: 1px 4px; margin-left: .3rem; vertical-align: middle; white-space: nowrap;
+}
+.privacy-note {
+  display: flex; align-items: center; gap: .35rem; margin-top: .5rem;
+  font-size: .72rem; color: #2ecc71; opacity: .85;
+}
 
 .vp-right {
   flex: 0 0 35%; display: flex; flex-direction: column; overflow: hidden;
@@ -303,6 +319,10 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
   </svg>
   <h1>EverGuard Search</h1>
+  <div class="privacy-badge" title="Your IP is hidden from all video sites. Thumbnails and videos are proxied through this server.">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    IP Protected
+  </div>
 </header>
 
 <div class="search-area">
@@ -349,7 +369,11 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
         <h2 id="vp-title"></h2>
         <div class="vp-info-meta">
           <span id="vp-badge"></span>
-          <a id="vp-link" href="#" target="_blank" rel="noopener noreferrer">Open source page &#x2197;</a>
+          <a id="vp-link" href="#" target="_blank" rel="noopener noreferrer" class="ext-link" title="⚠️ Opens the original site directly — your IP will be visible to that site">Open source page &#x2197; <span class="ext-warn">IP exposed</span></a>
+        </div>
+        <div class="privacy-note">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#2ecc71" stroke-width="2.2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          Video &amp; thumbnails stream through this server — your IP is hidden from the video site.
         </div>
       </div>
     </div>

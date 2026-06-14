@@ -87,11 +87,25 @@ async function probeContentLength(streamUrl, refUrl) {
   }
 }
 
+// Headers the client sends that we must NEVER forward upstream — would expose
+// the end-user's browser fingerprint, IP hints, or tracking tokens.
+const STRIP_CLIENT_HEADERS = new Set([
+  'x-forwarded-for', 'x-real-ip', 'x-forwarded-host', 'x-forwarded-proto',
+  'forwarded', 'via', 'user-agent', 'accept-language', 'accept-encoding',
+  'cookie', 'authorization', 'origin', 'cf-connecting-ip', 'cf-ipcountry',
+  'cf-ray', 'true-client-ip', 'x-cluster-client-ip',
+]);
+
 function fetchUpstream(raw, extra = {}, depth = 0) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(raw);
     const lib = parsed.protocol === 'https:' ? https : http;
-    const req = lib.request(raw, { headers: { ...PROXY_HEADERS, ...extra }, method: 'GET' }, res => {
+    // Always use the server's own PROXY_HEADERS — never leak client headers upstream
+    const safeExtra = {};
+    for (const [k, v] of Object.entries(extra)) {
+      if (!STRIP_CLIENT_HEADERS.has(k.toLowerCase())) safeExtra[k] = v;
+    }
+    const req = lib.request(raw, { headers: { ...PROXY_HEADERS, ...safeExtra }, method: 'GET' }, res => {
       const status = res.statusCode || 0;
       const loc = res.headers['location'];
       if (status >= 300 && status < 400 && loc && depth < 5) {
@@ -429,10 +443,29 @@ const healthServer = http.createServer(async (req, res) => {
   if (path === '/') {
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
+      // ── Privacy & security headers ─────────────────────────────────────────
+      // Block all external connections — every image/video/script must go through our proxy.
+      'Content-Security-Policy': [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",   // inline <script> block in web-ui.html
+        "style-src 'self' 'unsafe-inline'",    // inline <style> block
+        "img-src 'self'",                       // thumbnails via /api/thumb only
+        "media-src 'self'",                     // videos via /api/stream/* only
+        "connect-src 'self'",                   // fetch() calls to /api/* only
+        "frame-ancestors 'none'",               // no embedding in iframes
+        "form-action 'none'",
+        "base-uri 'none'",
+      ].join('; '),
+      // Disable browser features that could fingerprint or track users
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()',
       'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff',
-      'Cache-Control': 'no-store, no-cache',
-      'X-Frame-Options': 'SAMEORIGIN',
+      'X-Frame-Options': 'DENY',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'Pragma': 'no-cache',
+      // Tell browsers not to guess MIME types (prevents content sniffing)
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Resource-Policy': 'same-origin',
     });
     res.end(WEB_UI_HTML);
     return;
