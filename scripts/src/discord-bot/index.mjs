@@ -333,12 +333,39 @@ healthServer.listen(PORT, '0.0.0.0', () => {
   logger.info(`Health check server listening on port ${PORT}`);
 });
 
+// ── Popular search suggestions for autocomplete ───────────────────────────────
+const POPULAR_SEARCHES = [
+  'step mom', 'step sister', 'step daughter', 'step dad', 'step brother',
+  'milf', 'cougar', 'mature', 'granny',
+  'teen', 'college', 'babysitter',
+  'big ass', 'big tits', 'big cock', 'huge cock',
+  'blonde', 'brunette', 'redhead',
+  'ebony', 'latina', 'asian', 'indian',
+  'lesbian', 'threesome', 'orgy', 'gangbang',
+  'pov', 'creampie', 'facial', 'squirt', 'anal',
+  'massage', 'secretary', 'teacher', 'nurse', 'maid',
+  'bdsm', 'bondage', 'domination',
+  'homemade', 'amateur', 'hidden cam', 'voyeur',
+  'british', 'german', 'french', 'italian', 'japanese',
+  'bbc', 'interracial', 'cuckold',
+  'dp', 'fisting', 'rimjob',
+  'solo', 'masturbation', 'toy', 'dildo',
+  'blowjob', 'deepthroat', 'handjob', 'footjob',
+  'lingerie', 'stockings', 'heels',
+  'casting', 'audition', 'first time',
+];
+
 // ── Slash commands ────────────────────────────────────────────────────────────
-// /search has NO options — it opens a modal instead
 const commands = [
   new SlashCommandBuilder()
     .setName('search')
-    .setDescription('Search for videos — opens a search box'),
+    .setDescription('Search for videos')
+    .addStringOption(opt =>
+      opt.setName('query')
+        .setDescription('What to search for')
+        .setRequired(true)
+        .setAutocomplete(true)
+    ),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -506,29 +533,39 @@ async function handleVideoFetch(interaction, key, picked, restorePage) {
   const stream = await getVideoStreamUrl(picked.url);
   logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
 
+  // Build a direct /api/stream/play/video.mp4 URL — Discord auto-embeds URLs ending in .mp4
+  // This is more reliable than OG-tag short links (/v/:id) which Discord sometimes ignores.
+  function buildPlayUrl(cdnUrl) {
+    if (!STREAM_BASE_URL) return null;
+    return `${STREAM_BASE_URL}/api/stream/play/video.mp4?url=${encodeURIComponent(cdnUrl)}&ref=${encodeURIComponent(picked.url)}`;
+  }
+
   if (stream?.url) {
-    let shortUrl;
     if (stream.isHls) {
-      shortUrl = createShortLink(stream.url, picked.url, picked.title, picked.thumbnail);
-      if (shortUrl) logger.info(`HLS short link: ${shortUrl}`);
+      const playUrl = buildPlayUrl(stream.url);
+      if (playUrl) {
+        logger.info(`HLS play URL: ${playUrl.slice(0, 80)}…`);
+        await interaction.followUp({ content: `🎬 **${picked.title}**\n${playUrl}` });
+        sent = true;
+      }
     } else {
       const sizeBytes = await probeContentLength(stream.url, picked.url);
       const MAX_EMBED_BYTES = 50 * 1024 * 1024;
       if (sizeBytes === null || sizeBytes <= MAX_EMBED_BYTES) {
-        shortUrl = createShortLink(stream.url, picked.url, picked.title, picked.thumbnail);
-        if (shortUrl) logger.info(`Fast path — short link: ${shortUrl} (size=${sizeBytes ?? 'unknown'})`);
+        const playUrl = buildPlayUrl(stream.url);
+        if (playUrl) {
+          logger.info(`Fast path — play URL (size=${sizeBytes ?? 'unknown'})`);
+          await interaction.followUp({ content: `🎬 **${picked.title}**\n${playUrl}` });
+          sent = true;
+        } else {
+          // No proxy — send direct CDN URL; Discord auto-embeds plain .mp4 links
+          logger.info(`No STREAM_BASE_URL — sending direct CDN URL`);
+          await interaction.followUp({ content: `🎬 **${picked.title}**\n${stream.url}` });
+          sent = true;
+        }
       } else {
         logger.warn(`Stream too large to embed (${sizeBytes} bytes) — falling through`);
       }
-    }
-    if (shortUrl) {
-      await interaction.followUp({ content: shortUrl });
-      sent = true;
-    } else if (!stream.isHls && stream.url) {
-      // No proxy configured — send direct CDN URL; Discord can embed plain .mp4 links
-      logger.info(`No STREAM_BASE_URL — sending direct CDN URL`);
-      await interaction.followUp({ content: `🎬 **${picked.title}**\n${stream.url}` });
-      sent = true;
     }
   }
 
@@ -540,12 +577,8 @@ async function handleVideoFetch(interaction, key, picked, restorePage) {
       new Promise(r => setTimeout(() => r(null), YTDLP_TIMEOUT_MS)),
     ]);
     if (directUrl) {
-      const shortUrl = createShortLink(directUrl, picked.url, picked.title, picked.thumbnail);
-      if (shortUrl) {
-        await interaction.followUp({ content: shortUrl });
-      } else {
-        await interaction.followUp({ content: `🎬 **${picked.title}**\n${directUrl}` });
-      }
+      const playUrl = buildPlayUrl(directUrl);
+      await interaction.followUp({ content: `🎬 **${picked.title}**\n${playUrl || directUrl}` });
       sent = true;
     }
   }
@@ -583,52 +616,53 @@ async function handleVideoFetch(interaction, key, picked, restorePage) {
   await interaction.editReply({ content: '✅ Done', embeds: [], components: [] });
 }
 
+// ── Shared search runner ──────────────────────────────────────────────────────
+async function runSearchInteraction(interaction, query) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let key;
+  try {
+    key = await startSearch(query, interaction.user.id);
+  } catch (err) {
+    logger.error('Search error:', err.message);
+    await interaction.editReply({ content: `❌ Search failed: ${err.message}`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  const stored = pendingResults.get(key);
+  if (!stored || stored.results.length === 0) {
+    await interaction.editReply({ content: `❌ No results found for **${query}**. Try a different search term.`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await sendSearchPanel(interaction, key, 0);
+}
+
 // ── Main interaction handler ──────────────────────────────────────────────────
 async function handleInteraction(interaction) {
-  // ── /search slash command — show modal ──────────────────────────────────────
-  if (interaction.isChatInputCommand() && interaction.commandName === 'search') {
-    logger.info(`/search from ${interaction.user.tag}`);
-    const modal = new ModalBuilder()
-      .setCustomId(`searchmodal:${interaction.user.id}`)
-      .setTitle('Video Search');
-    const input = new TextInputBuilder()
-      .setCustomId('query')
-      .setLabel('What are you searching for?')
-      .setStyle(TextInputStyle.Short)
-      .setPlaceholder('e.g. step mom kitchen')
-      .setRequired(true)
-      .setMaxLength(100);
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-    await interaction.showModal(modal);
+  // ── Autocomplete ─────────────────────────────────────────────────────────────
+  if (interaction.isAutocomplete() && interaction.commandName === 'search') {
+    const focused = interaction.options.getFocused().toLowerCase();
+    const suggestions = focused
+      ? POPULAR_SEARCHES.filter(s => s.includes(focused))
+      : POPULAR_SEARCHES;
+    await interaction.respond(
+      suggestions.slice(0, 25).map(s => ({ name: s, value: s }))
+    );
     return;
   }
 
-  // ── Modal submit ────────────────────────────────────────────────────────────
+  // ── /search slash command — search directly using the autocomplete query ─────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'search') {
+    const query = interaction.options.getString('query', true).trim();
+    logger.info(`/search "${query}" from ${interaction.user.tag}`);
+    await runSearchInteraction(interaction, query);
+    return;
+  }
+
+  // ── Modal submit (from "New Search" button) ──────────────────────────────────
   if (interaction.isModalSubmit() && interaction.customId.startsWith('searchmodal:')) {
     const query = interaction.fields.getTextInputValue('query').trim();
     if (!query) { await interaction.reply({ content: '❌ Please enter a search term.', flags: MessageFlags.Ephemeral }); return; }
-
     logger.info(`Modal search: "${query}" from ${interaction.user.tag}`);
-
-    // Defer ephemerally — only this user sees the loading indicator
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-    let key;
-    try {
-      key = await startSearch(query, interaction.user.id);
-    } catch (err) {
-      logger.error('Search error:', err.message);
-      await interaction.editReply({ content: `❌ Search failed: ${err.message}`, flags: MessageFlags.Ephemeral });
-      return;
-    }
-
-    const stored = pendingResults.get(key);
-    if (!stored || stored.results.length === 0) {
-      await interaction.editReply({ content: `❌ No results found for **${query}**. Try a different search term.`, flags: MessageFlags.Ephemeral });
-      return;
-    }
-
-    await sendSearchPanel(interaction, key, 0);
+    await runSearchInteraction(interaction, query);
     return;
   }
 
