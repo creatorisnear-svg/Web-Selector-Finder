@@ -53,7 +53,8 @@ const PROXY_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.5',
   'Cookie': 'age_verified=1; ageGate=true; confirm=1',
 };
-const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com', 'media.xxbrits.com'];
+const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com', 'media.xxbrits.com', 'fpoxxx.com', 'cdn.fpoxxx.com'];
+const THUMB_HOSTS = [...ALLOWED_HOSTS, 'img.xvideos.com', 'img-cdn.xvideos-cdn.com', 'thumb.xnxx.com', 'img.xnxx-cdn.com', 'img.xxbrits.com'];
 
 function isAllowedUrl(raw) {
   try { return ALLOWED_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; }
@@ -426,8 +427,43 @@ const healthServer = http.createServer(async (req, res) => {
   }
 
   if (path === '/') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'no-store, no-cache',
+      'X-Frame-Options': 'SAMEORIGIN',
+    });
     res.end(WEB_UI_HTML);
+    return;
+  }
+
+  // ── Thumbnail proxy — hides user IP from external CDNs ────────────────────
+  if (path === '/api/thumb') {
+    const reqUrl = new URL(req.url, 'http://localhost');
+    const raw = (reqUrl.searchParams.get('url') || '').trim();
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    if (!raw) { res.writeHead(204); res.end(); return; }
+    const isAllowed = (() => { try { return THUMB_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; } })();
+    if (!isAllowed) { res.writeHead(204); res.end(); return; }
+    try {
+      const upRes = await fetchUpstream(raw, { 'Referer': '' });
+      const ct = upRes.headers['content-type'] || 'image/jpeg';
+      if (!ct.startsWith('image/')) { res.writeHead(204); res.end(); upRes.resume(); return; }
+      const headers = {
+        'Content-Type': ct,
+        'Cache-Control': 'public, max-age=86400',
+        'Referrer-Policy': 'no-referrer',
+      };
+      if (upRes.headers['content-length']) headers['Content-Length'] = upRes.headers['content-length'];
+      res.writeHead(upRes.statusCode >= 400 ? 204 : 200, headers);
+      if (upRes.statusCode >= 400) { res.end(); upRes.resume(); return; }
+      upRes.pipe(res);
+      req.on('close', () => upRes.destroy());
+    } catch (err) {
+      if (!res.headersSent) { res.writeHead(204); res.end(); }
+    }
     return;
   }
 

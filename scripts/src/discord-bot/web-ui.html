@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta name="referrer" content="no-referrer"/>
+<meta name="robots" content="noindex,nofollow"/>
 <title>EverGuard Search</title>
 <style>
 :root {
@@ -214,12 +216,20 @@ header h1 { font-size: 1rem; font-weight: 700; color: var(--accent); letter-spac
   .card-title { font-size: .76rem; }
   .pagination { padding: 1rem .5rem 2rem; gap: .2rem; }
   .pg-btn { min-width: 32px; height: 32px; font-size: .8rem; }
-  .vp-overlay.open { flex-direction: column; }
-  .vp-body { flex-direction: column; overflow-y: auto; }
+  /* Video page — stack vertically and make the overlay scrollable */
+  .vp-overlay { overflow-y: auto; }
+  .vp-topbar { position: sticky; top: 0; z-index: 10; }
+  .vp-body { flex-direction: column; overflow: visible; height: auto; }
   .vp-left { flex: none; border-right: none; overflow-y: visible; }
-  .vp-right { flex: none; overflow: visible; max-height: none; }
-  .vp-related-list { overflow: visible; }
+  .vp-right { flex: none; overflow: visible; max-height: none; border-top: 1px solid var(--border); }
+  .vp-related-list { overflow: visible; display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; padding: .5rem; }
+  .related-card { flex-direction: column; padding: .35rem; }
+  .related-thumb { width: 100%; aspect-ratio: 16/9; }
+  .related-title { -webkit-line-clamp: 2; font-size: .74rem; }
   .vp-player-wrap { aspect-ratio: 16/9; }
+  .vp-info { padding: .7rem .85rem; }
+  .vp-info h2 { font-size: .9rem; }
+  .vp-related-head { padding: .6rem .85rem; }
 }
 @media (max-width: 400px) {
   .grid { gap: .35rem; }
@@ -292,6 +302,12 @@ header h1 { font-size: 1rem; font-weight: 700; color: var(--accent); letter-spac
 
 <script>
 (function() {
+  /* ── Thumb proxy helper — hides user IP from CDNs ───────────────────────── */
+  function thumbUrl(url) {
+    if (!url) return '';
+    return '/api/thumb?url=' + encodeURIComponent(url);
+  }
+
   /* ── DOM refs ────────────────────────────────────────────────────────────── */
   var qEl         = document.getElementById('q');
   var gridEl      = document.getElementById('main-grid');
@@ -489,7 +505,7 @@ header h1 { font-size: 1rem; font-weight: 700; color: var(--accent); letter-spac
     var card = document.createElement('div');
     card.className = 'card';
     var thumbInner = r.thumbnail
-      ? '<img src="' + esc(r.thumbnail) + '" alt="" loading="lazy" onerror="this.parentNode.innerHTML=\'<div class=no-thumb>\u25b6</div>\'">'
+      ? '<img src="' + thumbUrl(r.thumbnail) + '" alt="" loading="lazy" onerror="this.parentNode.innerHTML=\'<div class=no-thumb>\u25b6</div>\'">'
       : '<div class="no-thumb">\u25b6</div>';
     var durHtml = r.duration ? '<span class="dur-badge">' + esc(r.duration) + '</span>' : '';
     card.innerHTML =
@@ -625,7 +641,7 @@ header h1 { font-size: 1rem; font-weight: 700; color: var(--accent); letter-spac
     var wrap = document.createElement('div');
     wrap.className = 'related-card';
     var thumbInner = r.thumbnail
-      ? '<img src="' + esc(r.thumbnail) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">'
+      ? '<img src="' + thumbUrl(r.thumbnail) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">'
       : '<div class="no-thumb">\u25b6</div>';
     var durHtml = r.duration ? '<span class="dur-badge">' + esc(r.duration) + '</span>' : '';
     wrap.innerHTML =
