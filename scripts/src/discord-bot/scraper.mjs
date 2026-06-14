@@ -405,13 +405,118 @@ async function searchFpoxxx(query, page = 0) {
   }
 }
 
+// ── FreePornVideos scraper ─────────────────────────────────────────────────────
+async function searchFreepornvideos(query, page = 0) {
+  // Page 0 = no page param, page 1+ = &page=N (1-indexed so page+1)
+  const pageParam = page > 0 ? `&page=${page + 1}` : '';
+  const searchUrl = `https://www.freepornvideos.xxx/search/?q=${encodeURIComponent(query)}${pageParam}`;
+  logger.info(`freepornvideos search: ${searchUrl}`);
+  try {
+    const { data } = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'text/html',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      timeout: 15000,
+    });
+    const $ = cheerio.load(data);
+    const seen = new Set();
+    const results = [];
+
+    $('.item').each((_, el) => {
+      if (results.length >= 20) return;
+      const anchor = $(el).find('a[href]').first();
+      const rawUrl = anchor.attr('href') || '';
+      if (!rawUrl || seen.has(rawUrl)) return;
+      // Only video pages (contain a slug path, not category/search/lang pages)
+      if (!rawUrl.includes('freepornvideos.xxx/') || rawUrl.includes('/search/') || rawUrl.includes('/category/') || /\/[a-z]{2}\//.test(rawUrl)) return;
+      seen.add(rawUrl);
+      const url = rawUrl.startsWith('http') ? rawUrl : `https://www.freepornvideos.xxx${rawUrl}`;
+
+      const title = (
+        $(el).find('.thumb_title').first().text().trim() ||
+        anchor.attr('title') ||
+        $(el).find('img').first().attr('alt') || ''
+      ).replace(/\s+/g, ' ').trim();
+      if (!title || title.length < 4) return;
+
+      const durText = $(el).find('.duration').first().text().trim();
+      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+
+      results.push({
+        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+        url,
+        duration: durText || null,
+        thumbnail,
+      });
+    });
+
+    logger.info(`freepornvideos search returned ${results.length} results`);
+    return results;
+  } catch (err) {
+    logger.error(`freepornvideos search failed: ${err.message}`);
+    return [];
+  }
+}
+
+// ── Duration helpers ──────────────────────────────────────────────────────────
+// Parse "MM:SS", "H:MM:SS", or bare number (minutes) into total seconds.
+function parseDurSecs(dur) {
+  if (!dur) return 0;
+  const s = dur.trim();
+  const parts = s.split(':').map(p => parseInt(p, 10));
+  if (parts.some(isNaN)) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] * 60; // bare number treated as minutes
+}
+
+// Normalize title for duplicate detection: lowercase, strip non-alphanumeric.
+function normTitle(t) {
+  return t.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
+}
+
+// Deduplicate combined results: where two entries have nearly identical titles,
+// keep the one with the longer duration (prefer the better version across sites).
+function dedupByDuration(results) {
+  const titleMap = new Map(); // normKey → index in output array
+  const output = [];
+
+  for (const r of results) {
+    const key = normTitle(r.title);
+    if (!key || key.length < 8) { output.push(r); continue; }
+
+    const existingIdx = titleMap.get(key);
+    if (existingIdx === undefined) {
+      titleMap.set(key, output.length);
+      output.push(r);
+    } else {
+      const existing = output[existingIdx];
+      const newSecs = parseDurSecs(r.duration);
+      const oldSecs = parseDurSecs(existing.duration);
+      if (newSecs > oldSecs) {
+        // Replace with the longer-duration version
+        output[existingIdx] = { ...r };
+        logger.info(`Dedup: replaced "${existing.title}" (${existing.duration}/${existing.source}) with longer "${r.title}" (${r.duration}/${r.source})`);
+      }
+      // else keep existing
+    }
+  }
+
+  return output;
+}
+
 // ── Public search entry point ─────────────────────────────────────────────────
 // Searches all sites in parallel and interleaves results. `page` is 0-indexed.
-// Pass `source` ('pornhub'|'xvideos'|'xnxx'|'xxbrits'|'fpoxxx') to restrict to one site.
+// Pass `source` to restrict to one site.
 export async function searchVideos(_searchUrlTemplate, query, page = 0, source = null) {
   // Single-source mode
   if (source && source !== 'all') {
-    const scrapers = { pornhub: searchPornhub, xvideos: searchXvideos, xnxx: searchXnxx, xxbrits: searchXxbrits, fpoxxx: searchFpoxxx };
+    const scrapers = {
+      pornhub: searchPornhub, xvideos: searchXvideos, xnxx: searchXnxx,
+      xxbrits: searchXxbrits, fpoxxx: searchFpoxxx, freepornvideos: searchFreepornvideos,
+    };
     const fn = scrapers[source];
     if (fn) {
       const results = await fn(query, page).catch(e => { logger.warn(`${source} failed: ${e.message}`); return []; });
@@ -424,21 +529,23 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     }
   }
 
-  const phPromise = searchPornhub(query, page).catch(e => { logger.warn(`pornhub failed: ${e.message}`); return []; });
-
-  const [ph, xv, xn, xb, fp] = await Promise.all([
-    phPromise,
+  const [ph, xv, xn, xb, fp, fpv] = await Promise.all([
+    searchPornhub(query, page).catch(e => { logger.warn(`pornhub failed: ${e.message}`); return []; }),
     searchXvideos(query, page).catch(e => { logger.warn(`xvideos failed: ${e.message}`); return []; }),
     searchXnxx(query, page).catch(e => { logger.warn(`xnxx failed: ${e.message}`); return []; }),
     searchXxbrits(query, page).catch(e => { logger.warn(`xxbrits failed: ${e.message}`); return []; }),
     searchFpoxxx(query, page).catch(e => { logger.warn(`fpoxxx failed: ${e.message}`); return []; }),
+    searchFreepornvideos(query, page).catch(e => { logger.warn(`freepornvideos failed: ${e.message}`); return []; }),
   ]);
 
-  // Tag each result with its source so the UI can show where it came from
+  // Tag each result with its source
   const tag = (arr, src) => arr.map(r => ({ ...r, source: src }));
-  const tagged = [tag(ph, 'pornhub'), tag(xv, 'xvideos'), tag(xn, 'xnxx'), tag(xb, 'xxbrits'), tag(fp, 'fpoxxx')];
+  const tagged = [
+    tag(ph, 'pornhub'), tag(xv, 'xvideos'), tag(xn, 'xnxx'),
+    tag(xb, 'xxbrits'), tag(fp, 'fpoxxx'), tag(fpv, 'freepornvideos'),
+  ];
 
-  // Round-robin interleave so the first page shows results from all sites
+  // Round-robin interleave so results from all sites appear on every page
   const interleaved = [];
   const seen = new Set();
   let added = true;
@@ -453,13 +560,16 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     }
   }
 
-  // Push relevant results to the top while preserving the round-robin order within each group
+  // Deduplicate: if two results have the same title, keep the longer-duration one
+  const deduped = dedupByDuration(interleaved);
+
+  // Push relevant results to the top while preserving order within each group
   const words = queryTokens(query);
-  const relevant = interleaved.filter(r => isRelevant(r.title, words));
-  const others = interleaved.filter(r => !isRelevant(r.title, words));
+  const relevant = deduped.filter(r => isRelevant(r.title, words));
+  const others = deduped.filter(r => !isRelevant(r.title, words));
   const final = [...relevant, ...others];
 
-  logger.info(`Combined search "${query}" page ${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} → ${final.length} total`);
+  logger.info(`Combined search "${query}" page ${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} → ${final.length} (after dedup) total`);
   return final;
 }
 

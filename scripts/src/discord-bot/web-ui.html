@@ -78,6 +78,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .chip-xnxx.active   { background: #f5c518; border-color: #f5c518; color: #000; }
 .chip-xxbrits.active{ background: #1e90ff; border-color: #1e90ff; color: #fff; }
 .chip-fpoxxx.active { background: #9b59b6; border-color: #9b59b6; color: #fff; }
+.chip-freepornvideos.active { background: #e74c3c; border-color: #e74c3c; color: #fff; }
 
 /* ── Status bar ───────────────────────────────────────────────────────────── */
 #status { text-align: center; color: var(--muted); padding: 1.25rem 1rem .4rem; font-size: .85rem; min-height: 2.5rem; }
@@ -118,7 +119,8 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .badge-xvideos  { background: #cc0000; color: #fff; }
 .badge-xnxx     { background: #f5c518; color: #000; }
 .badge-xxbrits  { background: #1e90ff; color: #fff; }
-.badge-fpoxxx   { background: #9b59b6; color: #fff; }
+.badge-fpoxxx          { background: #9b59b6; color: #fff; }
+.badge-freepornvideos  { background: #e74c3c; color: #fff; }
 
 /* ── Skeleton loading ─────────────────────────────────────────────────────── */
 @keyframes shimmer {
@@ -310,12 +312,13 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     <div class="autocomplete" id="autocomplete"></div>
   </div>
   <div class="source-chips" id="source-chips">
-    <button class="chip active"          data-src="all">All Sites</button>
-    <button class="chip chip-ph"         data-src="pornhub">PornHub</button>
-    <button class="chip chip-xv"         data-src="xvideos">Xvideos</button>
-    <button class="chip chip-xnxx"       data-src="xnxx">XNXX</button>
-    <button class="chip chip-xxbrits"    data-src="xxbrits">XXBrits</button>
-    <button class="chip chip-fpoxxx"     data-src="fpoxxx">FPoxxx</button>
+    <button class="chip active"               data-src="all">All Sites</button>
+    <button class="chip chip-ph"              data-src="pornhub">PornHub</button>
+    <button class="chip chip-xv"              data-src="xvideos">Xvideos</button>
+    <button class="chip chip-xnxx"            data-src="xnxx">XNXX</button>
+    <button class="chip chip-xxbrits"         data-src="xxbrits">XXBrits</button>
+    <button class="chip chip-fpoxxx"          data-src="fpoxxx">FPoxxx</button>
+    <button class="chip chip-freepornvideos"  data-src="freepornvideos">FreePornVideos</button>
   </div>
 </div>
 
@@ -394,11 +397,12 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   var isFetching    = false;
 
   var BADGE = {
-    pornhub: { cls: 'badge badge-pornhub', label: 'PH'      },
-    xvideos: { cls: 'badge badge-xvideos', label: 'XV'      },
-    xnxx:    { cls: 'badge badge-xnxx',    label: 'XNXX'   },
-    xxbrits: { cls: 'badge badge-xxbrits', label: 'XXBrits' },
-    fpoxxx:  { cls: 'badge badge-fpoxxx',  label: 'FPoxxx'  },
+    pornhub:        { cls: 'badge badge-pornhub',        label: 'PH'      },
+    xvideos:        { cls: 'badge badge-xvideos',        label: 'XV'      },
+    xnxx:           { cls: 'badge badge-xnxx',           label: 'XNXX'   },
+    xxbrits:        { cls: 'badge badge-xxbrits',        label: 'XXBrits' },
+    fpoxxx:         { cls: 'badge badge-fpoxxx',         label: 'FPoxxx'  },
+    freepornvideos: { cls: 'badge badge-freepornvideos', label: 'FPV'     },
   };
 
   /* ── Source chip selection ───────────────────────────────────────────────── */
