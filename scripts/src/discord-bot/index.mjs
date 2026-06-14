@@ -485,14 +485,16 @@ function dedupeByUrl(items) {
   return out;
 }
 
-// ── Video fetch — posts publicly, then restores ephemeral panel ───────────────
+// ── Video fetch — posts video publicly, sends fresh panel at the bottom ───────
 async function handleVideoFetch(interaction, key, picked, restorePage) {
-  // Acknowledge the button click ephemerally — shows "⏳ fetching…" only to the user
-  await interaction.update({
+  // Silently acknowledge the button — leave the old panel visible while we fetch
+  await interaction.deferUpdate();
+
+  // Replace the old panel with a minimal "fetching" note so the user knows something is happening
+  await interaction.editReply({
     content: `⏳ Fetching **${picked.title}**…`,
     embeds: [],
     components: [],
-    flags: MessageFlags.Ephemeral,
   });
 
   const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
@@ -561,8 +563,17 @@ async function handleVideoFetch(interaction, key, picked, restorePage) {
     });
   }
 
-  // Restore the search panel at the same page — ephemeral editReply
-  await sendSearchPanel(interaction, key, restorePage);
+  // Send the search panel as a NEW ephemeral followUp — appears right below the video
+  // so the user never has to scroll up
+  const stored = pendingResults.get(key);
+  if (stored) {
+    stored.currentPage = restorePage;
+    const panel = buildResultsPage(stored.results, restorePage, key, interaction.user.id, stored.exhausted);
+    await interaction.followUp(panel);
+  }
+
+  // Clear the old "⏳ Fetching…" placeholder so it doesn't linger
+  await interaction.editReply({ content: '✅ Done', embeds: [], components: [] });
 }
 
 // ── Main interaction handler ──────────────────────────────────────────────────
