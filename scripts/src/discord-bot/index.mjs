@@ -2,6 +2,7 @@ import http from 'http';
 import https from 'https';
 import { URL } from 'url';
 import { spawn } from 'child_process';
+import { readFileSync } from 'fs';
 import {
   Client,
   GatewayIntentBits,
@@ -283,11 +284,80 @@ async function handleVideoStream(req, res) {
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '5000', 10);
+const WEB_UI_HTML = readFileSync(new URL('./web-ui.html', import.meta.url).pathname, 'utf8');
+
 const healthServer = http.createServer(async (req, res) => {
   const path = (req.url || '/').split('?')[0];
 
   if (path === '/api/stream/video.mp4') { await handleStreamProxy(req, res); return; }
   if (path === '/api/stream/play/video.mp4') { await handleVideoStream(req, res); return; }
+
+  // ── Web search API ─────────────────────────────────────────────────────────
+  if (path === '/api/search') {
+    const reqUrl = new URL(req.url, 'http://localhost');
+    const q = (reqUrl.searchParams.get('q') || '').trim();
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (!q) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing q param' }));
+      return;
+    }
+    try {
+      const results = await searchVideos('', q, 0);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ results }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Search failed' }));
+    }
+    return;
+  }
+
+  // ── Resolve play URL for web UI ────────────────────────────────────────────
+  if (path === '/api/play-url') {
+    const reqUrl = new URL(req.url, 'http://localhost');
+    const videoPageUrl = (reqUrl.searchParams.get('url') || '').trim();
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (!videoPageUrl) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing url param' }));
+      return;
+    }
+    const BASE = process.env.STREAM_BASE_URL;
+    try {
+      const stream = await getVideoStreamUrl(videoPageUrl);
+      if (stream?.url && BASE) {
+        const playUrl = `${BASE}/api/stream/play/video.mp4?url=${encodeURIComponent(stream.url)}&ref=${encodeURIComponent(videoPageUrl)}`;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ playUrl }));
+        return;
+      }
+      // Fallback: try yt-dlp direct URL
+      const directUrl = await Promise.race([
+        getDirectMp4Url(videoPageUrl, stream?.cookies || ''),
+        new Promise(r => setTimeout(() => r(null), 12000)),
+      ]);
+      if (directUrl && BASE) {
+        const playUrl = `${BASE}/api/stream/play/video.mp4?url=${encodeURIComponent(directUrl)}&ref=${encodeURIComponent(videoPageUrl)}`;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ playUrl }));
+        return;
+      }
+      // No BASE URL configured — return direct CDN URL as-is
+      const cdnUrl = (stream?.url && !stream.isHls) ? stream.url : (directUrl || null);
+      if (cdnUrl) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ playUrl: cdnUrl }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No stream found', fallback: videoPageUrl }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to resolve stream URL' }));
+    }
+    return;
+  }
 
   const shortMatch = path.match(/^\/v\/([a-z0-9]+)$/i);
   if (shortMatch) {
@@ -319,10 +389,16 @@ const healthServer = http.createServer(async (req, res) => {
     return;
   }
 
-  if (path === '/' || path === '/health') {
+  if (path === '/health') {
     const payload = JSON.stringify({ status: 'ok', uptime: process.uptime() | 0 });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(payload);
+    return;
+  }
+
+  if (path === '/') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(WEB_UI_HTML);
     return;
   }
 
@@ -366,6 +442,9 @@ const commands = [
         .setRequired(true)
         .setAutocomplete(true)
     ),
+  new SlashCommandBuilder()
+    .setName('website')
+    .setDescription('Get the link to the EverGuard web search'),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -646,6 +725,17 @@ async function handleInteraction(interaction) {
     await interaction.respond(
       suggestions.slice(0, 25).map(s => ({ name: s, value: s }))
     );
+    return;
+  }
+
+  // ── /website slash command ────────────────────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'website') {
+    const url = process.env.STREAM_BASE_URL;
+    if (!url) {
+      await interaction.reply({ content: '⚠️ The web search is not configured yet (no `STREAM_BASE_URL` set).', flags: MessageFlags.Ephemeral });
+    } else {
+      await interaction.reply({ content: `🌐 **EverGuard Web Search**\n${url}\n\nSearch videos directly in your browser — no account needed.`, flags: MessageFlags.Ephemeral });
+    }
     return;
   }
 

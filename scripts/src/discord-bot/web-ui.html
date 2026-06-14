@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>EverGuard Search</title>
+<style>
+  :root {
+    --bg: #0f0f0f;
+    --surface: #1a1a1a;
+    --surface2: #222;
+    --border: #2a2a2a;
+    --accent: #5865f2;
+    --accent-hover: #4752c4;
+    --text: #e8e8e8;
+    --muted: #888;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-height: 100vh; }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: .9rem 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: .65rem;
+  }
+  header svg { flex-shrink: 0; }
+  header h1 { font-size: 1.05rem; font-weight: 700; color: var(--accent); letter-spacing: -.01em; }
+
+  .hero {
+    max-width: 680px;
+    margin: 3rem auto 0;
+    padding: 0 1rem;
+    text-align: center;
+  }
+  .hero p { color: var(--muted); font-size: .88rem; margin-bottom: 1.25rem; }
+
+  .search-row {
+    display: flex;
+    gap: .5rem;
+  }
+  .search-row input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: .97rem;
+    padding: .7rem 1rem;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .search-row input::placeholder { color: var(--muted); }
+  .search-row input:focus { border-color: var(--accent); }
+  .search-row button {
+    background: var(--accent);
+    border: none;
+    border-radius: 8px;
+    color: #fff;
+    cursor: pointer;
+    font-size: .95rem;
+    font-weight: 600;
+    padding: .7rem 1.3rem;
+    transition: background .15s;
+    white-space: nowrap;
+  }
+  .search-row button:hover { background: var(--accent-hover); }
+  .search-row button:disabled { opacity: .55; cursor: default; }
+
+  #status {
+    text-align: center;
+    color: var(--muted);
+    padding: 2.5rem 1rem;
+    font-size: .88rem;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: .85rem;
+    max-width: 1200px;
+    margin: 1.75rem auto 3rem;
+    padding: 0 1rem;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform .15s, border-color .15s, box-shadow .15s;
+  }
+  .card:hover {
+    transform: translateY(-3px);
+    border-color: var(--accent);
+    box-shadow: 0 6px 18px rgba(88,101,242,.18);
+  }
+  .thumb-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #1c1c1c;
+    overflow: hidden;
+  }
+  .thumb-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .thumb-wrap .no-thumb {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #444;
+    font-size: 2.2rem;
+  }
+  .thumb-wrap .play-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s;
+  }
+  .card:hover .play-overlay { background: rgba(0,0,0,.35); }
+  .play-overlay svg { opacity: 0; transition: opacity .15s; }
+  .card:hover .play-overlay svg { opacity: 1; }
+  .dur-badge {
+    position: absolute;
+    bottom: 5px;
+    right: 6px;
+    background: rgba(0,0,0,.78);
+    border-radius: 4px;
+    color: #fff;
+    font-size: .68rem;
+    font-weight: 600;
+    padding: 1px 5px;
+  }
+  .card-info {
+    padding: .6rem .7rem .65rem;
+  }
+  .card-title {
+    font-size: .81rem;
+    font-weight: 500;
+    line-height: 1.38;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    color: var(--text);
+  }
+  .card-meta {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    margin-top: .4rem;
+  }
+  .badge {
+    border-radius: 4px;
+    font-size: .63rem;
+    font-weight: 700;
+    padding: 1px 5px;
+    text-transform: uppercase;
+    letter-spacing: .02em;
+  }
+  .badge-pornhub  { background: #ff9000; color: #000; }
+  .badge-xvideos  { background: #cc0000; color: #fff; }
+  .badge-xnxx     { background: #f5c518; color: #000; }
+  .badge-xxbrits  { background: #1e90ff; color: #fff; }
+
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.88);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    max-width: 900px;
+    width: 100%;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6);
+  }
+  .modal-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .75rem;
+    padding: .8rem 1rem .75rem;
+  }
+  .modal-top-left { display: flex; align-items: center; gap: .5rem; flex: 1; min-width: 0; }
+  .modal-title { font-size: .88rem; font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .close-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 1.2rem;
+    line-height: 1;
+    flex-shrink: 0;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: color .15s, background .15s;
+  }
+  .close-btn:hover { color: var(--text); background: var(--surface2); }
+  .modal-video-wrap {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #000;
+  }
+  .modal-video-wrap video {
+    width: 100%;
+    height: 100%;
+    display: none;
+  }
+  .vid-status {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: .85rem;
+    color: var(--muted);
+    font-size: .88rem;
+  }
+  .vid-status a { color: var(--accent); }
+  .spinner {
+    width: 34px;
+    height: 34px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .modal-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: .6rem 1rem;
+    border-top: 1px solid var(--border);
+    gap: .5rem;
+  }
+  .modal-bottom a {
+    color: var(--accent);
+    font-size: .8rem;
+    text-decoration: none;
+  }
+  .modal-bottom a:hover { text-decoration: underline; }
+
+  @media (max-width: 520px) {
+    .hero { margin-top: 1.5rem; }
+    .grid { grid-template-columns: repeat(2, 1fr); gap: .5rem; }
+    .modal-title { font-size: .8rem; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5865f2" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+  </svg>
+  <h1>EverGuard Search</h1>
+</header>
+
+<div class="hero">
+  <p>Search across PornHub, Xvideos, XNXX &amp; XXBrits &mdash; no account, no tracking.</p>
+  <div class="search-row">
+    <input id="q" type="search" placeholder="Search videos..." autocomplete="off" spellcheck="false"/>
+    <button id="search-btn" onclick="doSearch()">Search</button>
+  </div>
+</div>
+
+<div id="status" class="status">Enter a search term above to get started.</div>
+<div id="grid" class="grid"></div>
+
+<div class="modal-overlay" id="modal" onclick="handleOverlayClick(event)">
+  <div class="modal">
+    <div class="modal-top">
+      <div class="modal-top-left">
+        <span id="modal-badge"></span>
+        <div class="modal-title" id="modal-title"></div>
+      </div>
+      <button class="close-btn" onclick="closeModal()" title="Close">&#x2715;</button>
+    </div>
+    <div class="modal-video-wrap">
+      <div class="vid-status" id="vid-status">
+        <div class="spinner"></div>
+        <span>Loading video&hellip;</span>
+      </div>
+      <video id="vid" controls preload="auto"></video>
+    </div>
+    <div class="modal-bottom">
+      <a id="modal-link" href="#" target="_blank" rel="noopener noreferrer">Open source page &#x2197;</a>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  var qEl = document.getElementById('q');
+  var gridEl = document.getElementById('grid');
+  var statusEl = document.getElementById('status');
+  var searchBtn = document.getElementById('search-btn');
+  var modal = document.getElementById('modal');
+  var modalTitle = document.getElementById('modal-title');
+  var modalBadge = document.getElementById('modal-badge');
+  var modalLink = document.getElementById('modal-link');
+  var vidEl = document.getElementById('vid');
+  var vidStatus = document.getElementById('vid-status');
+
+  var BADGE = {
+    pornhub:  { cls: 'badge badge-pornhub',  label: 'PH'     },
+    xvideos:  { cls: 'badge badge-xvideos',  label: 'XV'     },
+    xnxx:     { cls: 'badge badge-xnxx',     label: 'XNXX'  },
+    xxbrits:  { cls: 'badge badge-xxbrits',  label: 'XXBrits'}
+  };
+
+  qEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') doSearch(); });
+
+  function doSearch() {
+    var q = qEl.value.trim();
+    if (!q) return;
+    gridEl.innerHTML = '';
+    statusEl.textContent = 'Searching\u2026';
+    searchBtn.disabled = true;
+    fetch('/api/search?q=' + encodeURIComponent(q))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        searchBtn.disabled = false;
+        if (!data.results || data.results.length === 0) {
+          statusEl.textContent = 'No results found. Try a different search.';
+          return;
+        }
+        statusEl.textContent = data.results.length + '+ results';
+        data.results.forEach(function(r) { gridEl.appendChild(makeCard(r)); });
+      })
+      .catch(function() {
+        searchBtn.disabled = false;
+        statusEl.textContent = 'Search failed. Please try again.';
+      });
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function makeCard(r) {
+    var b = BADGE[r.source] || { cls: 'badge badge-xvideos', label: r.source || '' };
+    var card = document.createElement('div');
+    card.className = 'card';
+    var thumbInner = r.thumbnail
+      ? '<img src="' + esc(r.thumbnail) + '" alt="" loading="lazy" onerror="this.parentNode.innerHTML=\'<div class=no-thumb>\u25b6</div>\'">'
+      : '<div class="no-thumb">\u25b6</div>';
+    var durHtml = r.duration ? '<span class="dur-badge">' + esc(r.duration) + '</span>' : '';
+    card.innerHTML =
+      '<div class="thumb-wrap">' + thumbInner +
+      '<div class="play-overlay">' +
+        '<svg width="42" height="42" viewBox="0 0 42 42" fill="none">' +
+          '<circle cx="21" cy="21" r="21" fill="rgba(0,0,0,.55)"/>' +
+          '<polygon points="17,13 33,21 17,29" fill="white"/>' +
+        '</svg>' +
+      '</div>' + durHtml + '</div>' +
+      '<div class="card-info">' +
+        '<div class="card-title">' + esc(r.title) + '</div>' +
+        '<div class="card-meta"><span class="' + b.cls + '">' + b.label + '</span></div>' +
+      '</div>';
+    card.addEventListener('click', function() { openVideo(r); });
+    return card;
+  }
+
+  function openVideo(r) {
+    var b = BADGE[r.source] || { cls: 'badge badge-xvideos', label: r.source || '' };
+    modalTitle.textContent = r.title;
+    modalBadge.className = b.cls;
+    modalBadge.textContent = b.label;
+    modalLink.href = r.url;
+    vidEl.style.display = 'none';
+    vidStatus.style.display = 'flex';
+    vidStatus.innerHTML = '<div class="spinner"></div><span>Loading video\u2026</span>';
+    modal.classList.add('open');
+    vidEl.pause();
+    vidEl.removeAttribute('src');
+    vidEl.load();
+
+    fetch('/api/play-url?url=' + encodeURIComponent(r.url))
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        if (data.playUrl) {
+          vidEl.src = data.playUrl;
+          vidEl.style.display = 'block';
+          vidStatus.style.display = 'none';
+          vidEl.play().catch(function() {});
+        } else {
+          vidStatus.innerHTML = '<span>Could not load video. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
+        }
+      })
+      .catch(function() {
+        vidStatus.innerHTML = '<span>Failed to load. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
+      });
+  }
+
+  function closeModal() {
+    modal.classList.remove('open');
+    vidEl.pause();
+    vidEl.removeAttribute('src');
+    vidEl.load();
+    vidEl.style.display = 'none';
+    vidStatus.style.display = 'flex';
+    vidStatus.innerHTML = '<div class="spinner"></div><span>Loading video\u2026</span>';
+  }
+
+  function handleOverlayClick(e) {
+    if (e.target === modal) closeModal();
+  }
+
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+
+  window.doSearch = doSearch;
+  window.closeModal = closeModal;
+  window.handleOverlayClick = handleOverlayClick;
+})();
+</script>
+</body>
+</html>
