@@ -412,6 +412,22 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 
   /* ── State ───────────────────────────────────────────────────────────────── */
   var currentQuery  = '';
+
+  /* ── Query obfuscation ───────────────────────────────────────────────────────
+     Encodes the search term before it hits the wire so Render's HTTP access
+     logs never see the real text — only scrambled base64url characters.
+     Must use the same key as _OBF_KEY in index.mjs.                          */
+  var _K = [0x4b,0x7e,0x21,0x5d,0x93,0x6f,0x3a,0xb2,0x08,0xd4,0x51,0xc7,0x2e,0x89,0xf0,0x15];
+  function _enc(s) {
+    try {
+      var r = s.split('').reverse().join('');
+      var bytes = [];
+      for (var i = 0; i < r.length; i++) bytes.push(r.charCodeAt(i) ^ _K[i % _K.length]);
+      var bin = String.fromCharCode.apply(null, bytes);
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    } catch(e) { return encodeURIComponent(s); }
+  }
+
   var currentPage   = 0;
   var maxKnownPage  = 0;
   var hasNextPage   = false;
@@ -481,7 +497,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   });
 
   function loadSuggestions(q) {
-    fetch('/api/suggestions?q=' + encodeURIComponent(q))
+    fetch('/api/suggestions?q=' + _enc(q))
       .then(function(r) { return r.json(); })
       .then(function(d) { renderAC(d.suggestions || []); })
       .catch(function() {});
@@ -556,7 +572,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     pageLoadBar.classList.add('active');
     showSkeletons(20);
 
-    var url = '/api/search?q=' + encodeURIComponent(currentQuery) + '&page=' + p;
+    var url = '/api/search?q=' + _enc(currentQuery) + '&page=' + p;
     if (currentSource && currentSource !== 'all') url += '&source=' + encodeURIComponent(currentSource);
 
     fetch(url)

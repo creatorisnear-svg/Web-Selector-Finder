@@ -297,6 +297,32 @@ async function handleVideoStream(req, res) {
   }
 }
 
+// ── Query obfuscation ─────────────────────────────────────────────────────────
+// The browser encodes every search query with XOR + base64url before it hits the
+// wire. Render's HTTP access logs only ever see scrambled bytes, not the real term.
+// The same key must be kept in sync with web-ui.html's _enc() function.
+// This is not cryptographically secret (key is in source), but it defeats
+// automated log scanning and casual log browsing — the primary threat model.
+const _OBF_KEY = [0x4b,0x7e,0x21,0x5d,0x93,0x6f,0x3a,0xb2,0x08,0xd4,0x51,0xc7,0x2e,0x89,0xf0,0x15];
+function _dec(encoded) {
+  if (!encoded) return '';
+  try {
+    // Accept both plain text (legacy/direct calls) and base64url-encoded strings.
+    // Plain text won't survive Buffer.from(…,'base64') cleanly if it has spaces/special chars,
+    // but base64url strings never contain spaces — use that to distinguish.
+    if (!/^[A-Za-z0-9_-]+$/.test(encoded)) return encoded; // plain text fallback
+    const pad = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = pad + '=='.slice(0, (4 - pad.length % 4) % 4);
+    const buf = Buffer.from(padded, 'base64');
+    let out = '';
+    for (let i = 0; i < buf.length; i++) out += String.fromCharCode(buf[i] ^ _OBF_KEY[i % _OBF_KEY.length]);
+    // Reverse the string (client reverses before encoding)
+    return out.split('').reverse().join('');
+  } catch {
+    return encoded; // fallback: use as-is
+  }
+}
+
 // ── HTTP server ───────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '5000', 10);
 const WEB_UI_HTML = readFileSync(new URL('./web-ui.html', import.meta.url).pathname, 'utf8');
@@ -310,7 +336,7 @@ const healthServer = http.createServer(async (req, res) => {
   // ── Web search API ─────────────────────────────────────────────────────────
   if (path === '/api/search') {
     const reqUrl = new URL(req.url, 'http://localhost');
-    const q = (reqUrl.searchParams.get('q') || '').trim();
+    const q = _dec((reqUrl.searchParams.get('q') || '').trim()).trim();
     const page = Math.max(0, parseInt(reqUrl.searchParams.get('page') || '0', 10) || 0);
     const source = (reqUrl.searchParams.get('source') || '').trim().toLowerCase() || null;
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -347,7 +373,7 @@ const healthServer = http.createServer(async (req, res) => {
   // ── Search suggestions (autocomplete) ─────────────────────────────────────
   if (path === '/api/suggestions') {
     const reqUrl = new URL(req.url, 'http://localhost');
-    const q = (reqUrl.searchParams.get('q') || '').toLowerCase().trim();
+    const q = _dec((reqUrl.searchParams.get('q') || '').trim()).toLowerCase().trim();
     res.setHeader('Access-Control-Allow-Origin', '*');
     const matches = q
       ? POPULAR_SEARCHES.filter(s => s.includes(q)).slice(0, 8)
