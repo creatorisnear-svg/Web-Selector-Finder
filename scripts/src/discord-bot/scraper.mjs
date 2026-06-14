@@ -205,47 +205,80 @@ function normalize(s) {
   return s.toLowerCase().replace(/[\s\-_]+/g, '');
 }
 
-// Returns search tokens expanded with sub-parts of compound words.
-// "stepmom" → ["stepmom", "step", "mom"]  so titles with "stepmother" or "step mom" still match.
+// Breaks a compound word into its component parts for fuzzy matching.
+// "stepmom" → ["stepmom", "step", "mom", "stepmother", "mother"]
+// "stepson" → ["stepson", "step", "son"]
 const FAMILY_BREAKS = ['step','mom','dad','son','daughter','mother','father','sister','brother','bro','sis','milf'];
-function queryTokens(query) {
-  const STOP = new Set(['the','and','for','with','that','this','from','but','all','not','are','was']);
-  const base = query.toLowerCase().split(/\W+/).filter(w => w.length >= 3 && !STOP.has(w));
-  const extra = [];
-  for (const token of base) {
-    for (const prefix of FAMILY_BREAKS) {
-      if (token.startsWith(prefix) && token !== prefix) {
-        extra.push(prefix);
-        const rest = token.slice(prefix.length);
-        if (rest.length >= 3) extra.push(rest);
-        break;
+const FAMILY_SYNONYMS = { mom: ['mom','mother','mum'], dad: ['dad','father'], sis: ['sis','sister'], bro: ['bro','brother'] };
+function wordVariants(token) {
+  const variants = new Set([token]);
+  for (const prefix of FAMILY_BREAKS) {
+    if (token.startsWith(prefix) && token !== prefix) {
+      variants.add(prefix);
+      const rest = token.slice(prefix.length);
+      if (rest.length >= 3) variants.add(rest);
+      // Also add synonym forms e.g. "stepmom" → "stepmother"
+      const syns = FAMILY_SYNONYMS[prefix] || [];
+      for (const syn of syns) {
+        variants.add(token.replace(prefix, syn));
+        variants.add(syn);
       }
+      break;
     }
+    // suffix break: "stepmom" ends with "mom" → already handled by prefix above
   }
-  return [...new Set([...base, ...extra])];
+  return [...variants];
 }
 
-// Returns a relevance score [0, 1] — fraction of query words found in title.
-// e.g. query "step mom blowjob" (3 tokens), title "step mom" → 2/3 ≈ 0.67
-// e.g. query "teen" (1 token), title "busty teen" → 1/1 = 1.0
-function relevanceScore(title, queryWords) {
-  if (!queryWords.length) return 1;
+// Returns an array of concept groups. Each group is a list of word variants
+// that all count as a match for that ONE query concept.
+// "stepmom stepson threesome" →
+//   [ ["stepmom","step","mom","stepmother","mother"],
+//     ["stepson","step","son"],
+//     ["threesome"] ]
+// Scoring: matched_groups / total_groups  →  no token inflation.
+function queryGroups(query) {
+  const STOP = new Set(['the','and','for','with','that','this','from','but','all','not','are','was']);
+  const base = query.toLowerCase().split(/\W+/).filter(w => w.length >= 3 && !STOP.has(w));
+  return [...new Set(base)].map(w => wordVariants(w));
+}
+
+// Legacy flat token list — still used by sortByRelevance signature kept below.
+function queryTokens(query) {
+  return queryGroups(query).flat();
+}
+
+// Returns a relevance score [0, 1] — fraction of CONCEPTS (not raw tokens) matched.
+// e.g. query "stepmom stepson threesome" (3 concepts), title "step mom" →
+//   concept "stepmom" → title contains "stepmom"/"step"/"mom" → YES
+//   concept "stepson" → title contains "stepson"/"son" → NO
+//   concept "threesome" → NO   →  1/3 ≈ 0.33
+function relevanceScore(title, groups) {
+  if (!groups.length) return 1;
+  // Accept both flat arrays (legacy) and arrays-of-arrays (new groups)
+  const isGrouped = Array.isArray(groups[0]);
   const normTitle = normalize(title);
-  const matched = queryWords.filter(w => normTitle.includes(normalize(w))).length;
-  return matched / queryWords.length;
+  if (isGrouped) {
+    const matched = groups.filter(g => g.some(w => normTitle.includes(normalize(w)))).length;
+    return matched / groups.length;
+  }
+  // Legacy flat path
+  const matched = groups.filter(w => normTitle.includes(normalize(w))).length;
+  return matched / groups.length;
 }
 
 // Kept for single-word / general queries where any match counts.
-function isRelevant(title, queryWords) {
-  return relevanceScore(title, queryWords) > 0;
+function isRelevant(title, groups) {
+  return relevanceScore(title, groups) > 0;
 }
 
 // Sort results by relevance score (descending), preserving site-interleave order
-// within equal-score groups. For specific queries (2+ tokens) zero-score results
+// within equal-score groups. For specific queries (2+ concepts) zero-score results
 // are dropped. For general/short queries they're kept as a fallback.
-function sortByRelevance(results, queryWords) {
-  const isSpecific = queryWords.length >= 2;
-  const scored = results.map(r => ({ ...r, _score: relevanceScore(r.title, queryWords) }));
+function sortByRelevance(results, queryWordsOrGroups) {
+  const groups = queryWordsOrGroups;
+  const isSpecific = groups.length >= 2;
+  const scored = results.map(r => ({ ...r, _score: relevanceScore(r.title, groups) }));
   const filtered = isSpecific ? scored.filter(r => r._score > 0) : scored;
   // Stable sort: higher score first; ties preserve round-robin interleave order
   filtered.sort((a, b) => b._score - a._score);
@@ -254,67 +287,103 @@ function sortByRelevance(results, queryWords) {
 
 // ── XNXX scraper ─────────────────────────────────────────────────────────────
 async function searchXnxx(query, page = 0) {
-  // xnxx pages are 1-indexed in the path; page 0 = no suffix, page 1 = /1, etc.
+  // xnxx: use + for spaces (more reliable than %20 in path segments).
+  // Try /search/videos/ path first; fall back to ?k= query param.
+  const qEncoded = query.trim().replace(/\s+/g, '+');
   const pageSuffix = page > 0 ? `/${page}` : '';
-  const searchUrl = `https://www.xnxx.com/search/videos/${encodeURIComponent(query)}${pageSuffix}`;
+  const primaryUrl = `https://www.xnxx.com/search/videos/${qEncoded}${pageSuffix}`;
+  const fallbackUrl = `https://www.xnxx.com/?k=${qEncoded}${page > 0 ? `&p=${page}` : ''}`;
   logger.info(`xnxx search: ${redact(query)} p${page}`);
-  try {
-    const { data } = await axios.get(searchUrl, {
-      headers: {
-        'User-Agent': HEADERS['User-Agent'],
-        'Accept': 'text/html',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cookie': 'age_verified=1',
-      },
-      timeout: 15000
-    });
+
+  const reqHeaders = {
+    'User-Agent': HEADERS['User-Agent'],
+    'Accept': 'text/html',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cookie': 'age_verified=1; noncache=1',
+  };
+
+  async function parseXnxxPage(data, searchUrl) {
     const $ = cheerio.load(data);
     const seen = new Set();
     const results = [];
 
-    $('.thumb-block').each((_, el) => {
-      if (results.length >= 20) return;
-      // Only follow links to actual xnxx.com video pages (href starts with /video-)
-      const anchor = $(el).find('a[href^="/video-"]').first();
-      const href = anchor.attr('href') || '';
-      if (!href || seen.has(href)) return;
-      seen.add(href);
-      const url = `https://www.xnxx.com${href}`;
+    // XNXX uses .thumb-block or .mozaique li — try both
+    const containers = $('.thumb-block, .mozaique li').toArray();
+    // Also try a broader fallback: any <a> pointing to /video-
+    const videoAnchors = containers.length === 0
+      ? $('a[href^="/video-"]').toArray()
+      : [];
 
-      // Title lives in .thumb-under text — grab it and strip junk
-      const thumbUnder = $(el).find('.thumb-under').first();
-      const title = thumbUnder.text().trim().split('\n')[0].trim()
-        .replace(/\s+\d+\s*(min|sec)\s*$/i, '').trim();
-      if (!title || title.length < 4) return;
+    if (containers.length > 0) {
+      for (const el of containers) {
+        if (results.length >= 20) break;
+        const anchor = $(el).find('a[href^="/video-"]').first();
+        const href = anchor.attr('href') || '';
+        if (!href || seen.has(href)) continue;
+        seen.add(href);
+        const url = `https://www.xnxx.com${href}`;
 
-      // Duration is inside .metadata — extract "NNmin" or "NN:NN" pattern
-      const metaText = $(el).find('.metadata').first().text();
-      const durMatch = metaText.match(/(\d+)\s*min/i) || metaText.match(/(\d+:\d+)/);
-      let duration = null;
-      if (durMatch) {
-        if (durMatch[0].includes(':')) {
-          duration = durMatch[1];
-        } else {
-          const mins = parseInt(durMatch[1], 10);
-          duration = `${mins}:00`;
+        // Title: .thumb-under > p.title, or anchor title attr, or img alt
+        const thumbUnder = $(el).find('.thumb-under, p.title').first();
+        let title = thumbUnder.text().trim().split('\n')[0].trim()
+          .replace(/\s+\d+\s*(min|sec)\s*$/i, '').trim();
+        if (!title) title = anchor.attr('title') || $(el).find('img').attr('alt') || '';
+        title = title.trim();
+        if (!title || title.length < 4) continue;
+
+        const metaText = $(el).find('.metadata, .dur, [class*="duration"]').first().text();
+        const durMatch = metaText.match(/(\d+)\s*min/i) || metaText.match(/(\d+:\d+)/);
+        let duration = null;
+        if (durMatch) {
+          duration = durMatch[0].includes(':') ? durMatch[1] : `${parseInt(durMatch[1], 10)}:00`;
         }
+
+        const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+        results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration, thumbnail });
       }
+    } else {
+      // Fallback: deduplicate from direct <a href="/video-"> links
+      for (const el of videoAnchors) {
+        if (results.length >= 20) break;
+        const href = $(el).attr('href') || '';
+        if (!href || seen.has(href)) continue;
+        seen.add(href);
+        const url = `https://www.xnxx.com${href}`;
+        const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text()).trim();
+        if (!title || title.length < 4) continue;
+        const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+        results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration: null, thumbnail });
+      }
+    }
 
-      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+    return results;
+  }
 
-      results.push({
-        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
-        url,
-        duration,
-        thumbnail,
-      });
-    });
+  try {
+    const { data } = await axios.get(primaryUrl, { headers: reqHeaders, timeout: 15000 });
+    let results = await parseXnxxPage(data, primaryUrl);
+
+    // If primary URL returned nothing, try the ?k= fallback format
+    if (results.length === 0) {
+      logger.info('xnxx primary URL returned 0 results, trying fallback URL');
+      const { data: data2 } = await axios.get(fallbackUrl, { headers: reqHeaders, timeout: 15000 });
+      results = await parseXnxxPage(data2, fallbackUrl);
+    }
 
     logger.info(`xnxx search returned ${results.length} results`);
     return results;
   } catch (err) {
     logger.error(`xnxx search failed: ${err.message}`);
-    return [];
+    // Try fallback URL on error
+    try {
+      const { data } = await axios.get(fallbackUrl, { headers: reqHeaders, timeout: 15000 });
+      const results = await parseXnxxPage(data, fallbackUrl);
+      logger.info(`xnxx fallback returned ${results.length} results`);
+      return results;
+    } catch (err2) {
+      logger.error(`xnxx fallback also failed: ${err2.message}`);
+      return [];
+    }
   }
 }
 
@@ -378,35 +447,67 @@ async function searchXxbrits(query, page = 0) {
 // ── FPoxxx scraper ────────────────────────────────────────────────────────────
 async function searchFpoxxx(query, page = 0) {
   const pageNum = page + 1;
+  // fpo.xxx supports both /?s= and /search/ — use /?s= which is more reliable
   const searchUrl = pageNum === 1
     ? `https://www.fpo.xxx/?s=${encodeURIComponent(query)}`
     : `https://www.fpo.xxx/page/${pageNum}/?s=${encodeURIComponent(query)}`;
   logger.info(`fpo.xxx search: ${redact(query)} p${page}`);
   try {
     const { data } = await axios.get(searchUrl, {
-      headers: { 'User-Agent': HEADERS['User-Agent'], 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' },
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'text/html',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie': 'age_verified=1',
+      },
       timeout: 15000,
     });
     const $ = cheerio.load(data);
     const seen = new Set();
     const results = [];
 
-    $('article, .video-item, .item, .clip, .thumb-block').each((_, el) => {
+    // fpo.xxx uses a WordPress-based theme — video containers are typically
+    // <article>, .video-thumb, .videos-list-item, .clip, .item, .thumb
+    // We cast a wide net and then filter by whether the link goes to fpo.xxx
+    const containerSel = [
+      'article',
+      '.video-thumb',
+      '.videos-list-item',
+      '.clip',
+      '.item',
+      '.thumb',
+      '.video-item',
+      '.thumb-block',
+      'li.video',
+      '[class*="video-"]',
+    ].join(', ');
+
+    $(containerSel).each((_, el) => {
       if (results.length >= 20) return;
-      const anchor = $(el).find('a[href]').first();
+      // Find the primary video link — prefer links that look like video page URLs
+      let anchor = $(el).find('a[href*="fpo.xxx"]').first();
+      if (!anchor.length) anchor = $(el).find('a[href]').first();
       const rawUrl = anchor.attr('href') || '';
       if (!rawUrl || seen.has(rawUrl)) return;
-      if (!rawUrl.includes('fpo.xxx') && !rawUrl.startsWith('/')) return;
+
+      // Accept relative paths and fpo.xxx absolute URLs; skip other external links
+      const isFpo = rawUrl.includes('fpo.xxx') || rawUrl.startsWith('/');
+      if (!isFpo) return;
+
+      // Skip non-video pages (categories, tags, etc.)
+      if (/\/(category|tag|page|search|author|feed)\//i.test(rawUrl)) return;
+
       const url = rawUrl.startsWith('http') ? rawUrl : `https://www.fpo.xxx${rawUrl}`;
       seen.add(rawUrl);
 
       const title = (
-        $(el).find('.entry-title, h2, h3, .title, [class*="title"]').first().text().trim() ||
-        anchor.attr('title') || $(el).find('img').attr('alt') || ''
-      ).trim().replace(/\s+/g, ' ');
+        $(el).find('.entry-title, h2, h3, .title, [class*="title"], .video-title').first().text().trim() ||
+        anchor.attr('title') ||
+        $(el).find('img').first().attr('alt') || ''
+      ).replace(/\s+/g, ' ').trim();
       if (!title || title.length < 4) return;
 
-      const durText = $(el).find('.duration, .time, .runtime, [class*="dur"]').first().text().trim();
+      const durText = $(el).find('.duration, .time, .runtime, [class*="dur"], .video-duration').first().text().trim();
       const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
 
       results.push({
@@ -416,6 +517,24 @@ async function searchFpoxxx(query, page = 0) {
         thumbnail,
       });
     });
+
+    // If the container approach found nothing, fall back to scanning all fpo.xxx links
+    if (results.length === 0) {
+      logger.info('fpo.xxx container selectors found nothing — trying link scan fallback');
+      $('a[href*="fpo.xxx"]').each((_, el) => {
+        if (results.length >= 20) return;
+        const rawUrl = $(el).attr('href') || '';
+        if (!rawUrl || seen.has(rawUrl)) return;
+        if (/\/(category|tag|page|search|author|feed|wp-content)\//i.test(rawUrl)) return;
+        // Must look like a video page (slug with at least one path segment that isn't a known nav page)
+        if (!rawUrl.match(/fpo\.xxx\/[^/]{5,}\/?$/)) return;
+        seen.add(rawUrl);
+        const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text()).replace(/\s+/g, ' ').trim();
+        if (!title || title.length < 4) return;
+        const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+        results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url: rawUrl, duration: null, thumbnail });
+      });
+    }
 
     logger.info(`fpoxxx search returned ${results.length} results`);
     return results;
@@ -540,7 +659,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     const fn = scrapers[source];
     if (fn) {
       const results = await fn(query, page).catch(e => { logger.warn(`${source} failed: ${e.message}`); return []; });
-      const words = queryTokens(query);
+      const words = queryGroups(query);
       const tagged = results.map(r => ({ ...r, source }));
       logger.info(`Single-source "${source}" search ${redact(query)} p${page}: ${results.length} results`);
       return sortByRelevance(tagged, words);
@@ -582,7 +701,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
   const deduped = dedupByDuration(interleaved);
 
   // Score and sort: higher relevance first, zero-matches dropped for specific queries
-  const words = queryTokens(query);
+  const words = queryGroups(query);
   const final = sortByRelevance(deduped, words);
 
   logger.info(`Combined search ${redact(query)} p${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} → ${final.length} (after dedup+score)`);
