@@ -263,6 +263,56 @@
   }
   .modal-bottom a:hover { text-decoration: underline; }
 
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .35rem;
+    padding: .5rem 1rem 3rem;
+    flex-wrap: wrap;
+  }
+  .pagination .pg-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: .88rem;
+    font-weight: 500;
+    min-width: 36px;
+    height: 36px;
+    padding: 0 .55rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background .15s, border-color .15s, color .15s;
+    user-select: none;
+  }
+  .pagination .pg-btn:hover:not(:disabled):not(.active) {
+    background: var(--surface2);
+    border-color: #444;
+  }
+  .pagination .pg-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    cursor: default;
+  }
+  .pagination .pg-btn:disabled {
+    opacity: .35;
+    cursor: default;
+  }
+  .pagination .pg-dots {
+    color: var(--muted);
+    font-size: .88rem;
+    padding: 0 .2rem;
+    user-select: none;
+  }
+  @media (max-width: 600px) {
+    .pagination { gap: .25rem; padding-bottom: 2rem; }
+    .pagination .pg-btn { min-width: 32px; height: 32px; font-size: .82rem; }
+  }
+
   @media (max-width: 600px) {
     .hero { margin-top: 1.25rem; }
     .hero p { font-size: .83rem; margin-bottom: 1rem; }
@@ -307,6 +357,7 @@
 
 <div id="status" class="status">Enter a search term above to get started.</div>
 <div id="grid" class="grid"></div>
+<div id="pagination" class="pagination" style="display:none"></div>
 
 <div class="modal-overlay" id="modal" onclick="handleOverlayClick(event)">
   <div class="modal">
@@ -332,42 +383,78 @@
 
 <script>
 (function() {
-  var qEl = document.getElementById('q');
-  var gridEl = document.getElementById('grid');
-  var statusEl = document.getElementById('status');
-  var searchBtn = document.getElementById('search-btn');
-  var modal = document.getElementById('modal');
+  var qEl        = document.getElementById('q');
+  var gridEl     = document.getElementById('grid');
+  var statusEl   = document.getElementById('status');
+  var searchBtn  = document.getElementById('search-btn');
+  var paginEl    = document.getElementById('pagination');
+  var modal      = document.getElementById('modal');
   var modalTitle = document.getElementById('modal-title');
   var modalBadge = document.getElementById('modal-badge');
-  var modalLink = document.getElementById('modal-link');
-  var vidEl = document.getElementById('vid');
-  var vidStatus = document.getElementById('vid-status');
+  var modalLink  = document.getElementById('modal-link');
+  var vidEl      = document.getElementById('vid');
+  var vidStatus  = document.getElementById('vid-status');
 
   var BADGE = {
-    pornhub:  { cls: 'badge badge-pornhub',  label: 'PH'     },
-    xvideos:  { cls: 'badge badge-xvideos',  label: 'XV'     },
-    xnxx:     { cls: 'badge badge-xnxx',     label: 'XNXX'  },
-    xxbrits:  { cls: 'badge badge-xxbrits',  label: 'XXBrits'}
+    pornhub: { cls: 'badge badge-pornhub', label: 'PH'      },
+    xvideos: { cls: 'badge badge-xvideos', label: 'XV'      },
+    xnxx:    { cls: 'badge badge-xnxx',    label: 'XNXX'   },
+    xxbrits: { cls: 'badge badge-xxbrits', label: 'XXBrits' }
   };
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  var currentQuery   = '';
+  var currentPage    = 0;    // 0-indexed internally
+  var maxKnownPage   = 0;    // highest page with results
+  var hasNextPage    = false; // whether last fetch returned results
 
   qEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') doSearch(); });
 
+  // ── New search (always page 0) ─────────────────────────────────────────────
   function doSearch() {
     var q = qEl.value.trim();
     if (!q) return;
+    currentQuery  = q;
+    currentPage   = 0;
+    maxKnownPage  = 0;
+    hasNextPage   = false;
+    fetchPage(0);
+  }
+
+  // ── Go to a specific page ──────────────────────────────────────────────────
+  function goToPage(p) {
+    if (p < 0) return;
+    currentPage = p;
+    fetchPage(p);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // ── Fetch results for a page ───────────────────────────────────────────────
+  function fetchPage(p) {
     gridEl.innerHTML = '';
+    paginEl.style.display = 'none';
     statusEl.textContent = 'Searching\u2026';
     searchBtn.disabled = true;
-    fetch('/api/search?q=' + encodeURIComponent(q))
+
+    fetch('/api/search?q=' + encodeURIComponent(currentQuery) + '&page=' + p)
       .then(function(r) { return r.json(); })
       .then(function(data) {
         searchBtn.disabled = false;
-        if (!data.results || data.results.length === 0) {
+        var results = data.results || [];
+        if (results.length === 0 && p === 0) {
           statusEl.textContent = 'No results found. Try a different search.';
           return;
         }
-        statusEl.textContent = data.results.length + '+ results';
-        data.results.forEach(function(r) { gridEl.appendChild(makeCard(r)); });
+        if (results.length === 0) {
+          // Went past the last page — jump back
+          goToPage(maxKnownPage);
+          return;
+        }
+        hasNextPage  = results.length > 0;
+        if (p > maxKnownPage) maxKnownPage = p;
+        statusEl.textContent = 'Page ' + (p + 1) + ' \u2014 ' + results.length + ' results';
+        results.forEach(function(r) { gridEl.appendChild(makeCard(r)); });
+        renderPagination();
       })
       .catch(function() {
         searchBtn.disabled = false;
@@ -375,12 +462,83 @@
       });
   }
 
+  // ── Pagination bar (PH-style numbered pages) ──────────────────────────────
+  function renderPagination() {
+    paginEl.innerHTML = '';
+    paginEl.style.display = 'flex';
+
+    var cur    = currentPage;          // 0-indexed
+    var dispCur = cur + 1;             // 1-indexed for display
+    // We always show at least up to current page; if hasNextPage, one more exists
+    var lastKnown = maxKnownPage + 1;  // 1-indexed highest confirmed page
+    var showMax   = hasNextPage ? lastKnown + 1 : lastKnown; // speculative next
+
+    // Build visible page numbers around current
+    var pages = buildPageRange(dispCur, showMax);
+
+    // ← Prev button
+    var prev = btn('\u2190 Prev', cur === 0);
+    prev.addEventListener('click', function() { if (cur > 0) goToPage(cur - 1); });
+    paginEl.appendChild(prev);
+
+    pages.forEach(function(item) {
+      if (item === '\u2026') {
+        var dots = document.createElement('span');
+        dots.className = 'pg-dots';
+        dots.textContent = '\u2026';
+        paginEl.appendChild(dots);
+      } else {
+        var b = btn(String(item), false, item === dispCur);
+        (function(pg) {
+          b.addEventListener('click', function() { if (pg !== dispCur) goToPage(pg - 1); });
+        })(item);
+        paginEl.appendChild(b);
+      }
+    });
+
+    // Next → button
+    var next = btn('Next \u2192', !hasNextPage && cur >= maxKnownPage);
+    next.addEventListener('click', function() { goToPage(cur + 1); });
+    paginEl.appendChild(next);
+  }
+
+  // Returns array of page numbers (1-indexed) and '…' ellipsis strings
+  function buildPageRange(cur, total) {
+    if (total <= 7) {
+      var out = [];
+      for (var i = 1; i <= total; i++) out.push(i);
+      return out;
+    }
+    var result = [];
+    var delta = 2;
+    var left  = cur - delta;
+    var right = cur + delta;
+    var pages = [];
+    for (var i = 1; i <= total; i++) {
+      if (i === 1 || i === total || (i >= left && i <= right)) pages.push(i);
+    }
+    var prev = 0;
+    for (var j = 0; j < pages.length; j++) {
+      if (pages[j] - prev > 1) result.push('\u2026');
+      result.push(pages[j]);
+      prev = pages[j];
+    }
+    return result;
+  }
+
+  function btn(label, disabled, active) {
+    var b = document.createElement('button');
+    b.className = 'pg-btn' + (active ? ' active' : '');
+    b.textContent = label;
+    b.disabled = !!disabled;
+    return b;
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
   function esc(s) {
     return String(s)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   function makeCard(r) {
@@ -393,12 +551,13 @@
     var durHtml = r.duration ? '<span class="dur-badge">' + esc(r.duration) + '</span>' : '';
     card.innerHTML =
       '<div class="thumb-wrap">' + thumbInner +
-      '<div class="play-overlay">' +
-        '<svg width="42" height="42" viewBox="0 0 42 42" fill="none">' +
-          '<circle cx="21" cy="21" r="21" fill="rgba(0,0,0,.55)"/>' +
-          '<polygon points="17,13 33,21 17,29" fill="white"/>' +
-        '</svg>' +
-      '</div>' + durHtml + '</div>' +
+        '<div class="play-overlay">' +
+          '<svg width="42" height="42" viewBox="0 0 42 42" fill="none">' +
+            '<circle cx="21" cy="21" r="21" fill="rgba(0,0,0,.55)"/>' +
+            '<polygon points="17,13 33,21 17,29" fill="white"/>' +
+          '</svg>' +
+        '</div>' + durHtml +
+      '</div>' +
       '<div class="card-info">' +
         '<div class="card-title">' + esc(r.title) + '</div>' +
         '<div class="card-meta"><span class="' + b.cls + '">' + b.label + '</span></div>' +
@@ -407,15 +566,16 @@
     return card;
   }
 
+  // ── Video player ───────────────────────────────────────────────────────────
   function openVideo(r) {
     var b = BADGE[r.source] || { cls: 'badge badge-xvideos', label: r.source || '' };
     modalTitle.textContent = r.title;
-    modalBadge.className = b.cls;
+    modalBadge.className   = b.cls;
     modalBadge.textContent = b.label;
     modalLink.href = r.url;
-    vidEl.style.display = 'none';
+    vidEl.style.display    = 'none';
     vidStatus.style.display = 'flex';
-    vidStatus.innerHTML = '<div class="spinner"></div><span>Loading video\u2026</span>';
+    vidStatus.innerHTML    = '<div class="spinner"></div><span>Loading video\u2026</span>';
     modal.classList.add('open');
     vidEl.pause();
     vidEl.removeAttribute('src');
@@ -430,7 +590,7 @@
           vidStatus.style.display = 'none';
           vidEl.play().catch(function() {});
         } else {
-          vidStatus.innerHTML = '<span>Could not load video. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
+          vidStatus.innerHTML = '<span>Could not load. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
         }
       })
       .catch(function() {
@@ -443,19 +603,16 @@
     vidEl.pause();
     vidEl.removeAttribute('src');
     vidEl.load();
-    vidEl.style.display = 'none';
+    vidEl.style.display    = 'none';
     vidStatus.style.display = 'flex';
-    vidStatus.innerHTML = '<div class="spinner"></div><span>Loading video\u2026</span>';
+    vidStatus.innerHTML    = '<div class="spinner"></div><span>Loading video\u2026</span>';
   }
 
-  function handleOverlayClick(e) {
-    if (e.target === modal) closeModal();
-  }
-
+  function handleOverlayClick(e) { if (e.target === modal) closeModal(); }
   document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
 
-  window.doSearch = doSearch;
-  window.closeModal = closeModal;
+  window.doSearch           = doSearch;
+  window.closeModal         = closeModal;
   window.handleOverlayClick = handleOverlayClick;
 })();
 </script>
