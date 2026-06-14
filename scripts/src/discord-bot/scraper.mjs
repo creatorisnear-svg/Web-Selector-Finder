@@ -353,25 +353,91 @@ async function searchXxbrits(query, page = 0) {
   }
 }
 
+// ── FPoxxx scraper ────────────────────────────────────────────────────────────
+async function searchFpoxxx(query, page = 0) {
+  const pageNum = page + 1;
+  const searchUrl = pageNum === 1
+    ? `https://www.fpoxxx.com/?s=${encodeURIComponent(query)}`
+    : `https://www.fpoxxx.com/page/${pageNum}/?s=${encodeURIComponent(query)}`;
+  logger.info(`fpoxxx search: ${searchUrl}`);
+  try {
+    const { data } = await axios.get(searchUrl, {
+      headers: { 'User-Agent': HEADERS['User-Agent'], 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' },
+      timeout: 15000,
+    });
+    const $ = cheerio.load(data);
+    const seen = new Set();
+    const results = [];
+
+    $('article, .video-item, .item, .clip, .thumb-block').each((_, el) => {
+      if (results.length >= 20) return;
+      const anchor = $(el).find('a[href]').first();
+      const rawUrl = anchor.attr('href') || '';
+      if (!rawUrl || seen.has(rawUrl)) return;
+      if (!rawUrl.includes('fpoxxx.com') && !rawUrl.startsWith('/')) return;
+      const url = rawUrl.startsWith('http') ? rawUrl : `https://www.fpoxxx.com${rawUrl}`;
+      seen.add(rawUrl);
+
+      const title = (
+        $(el).find('.entry-title, h2, h3, .title, [class*="title"]').first().text().trim() ||
+        anchor.attr('title') || $(el).find('img').attr('alt') || ''
+      ).trim().replace(/\s+/g, ' ');
+      if (!title || title.length < 4) return;
+
+      const durText = $(el).find('.duration, .time, .runtime, [class*="dur"]').first().text().trim();
+      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+
+      results.push({
+        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+        url,
+        duration: durText || null,
+        thumbnail,
+      });
+    });
+
+    logger.info(`fpoxxx search returned ${results.length} results`);
+    return results;
+  } catch (err) {
+    logger.error(`fpoxxx search failed: ${err.message}`);
+    return [];
+  }
+}
+
 // ── Public search entry point ─────────────────────────────────────────────────
-// Searches PornHub, xvideos, xnxx and xxbrits in parallel and interleaves the
-// results so the top of the list is varied across sites. `page` is 0-indexed.
-export async function searchVideos(_searchUrlTemplate, query, page = 0) {
+// Searches all sites in parallel and interleaves results. `page` is 0-indexed.
+// Pass `source` ('pornhub'|'xvideos'|'xnxx'|'xxbrits'|'fpoxxx') to restrict to one site.
+export async function searchVideos(_searchUrlTemplate, query, page = 0, source = null) {
+  // Single-source mode
+  if (source && source !== 'all') {
+    const scrapers = { pornhub: searchPornhub, xvideos: searchXvideos, xnxx: searchXnxx, xxbrits: searchXxbrits, fpoxxx: searchFpoxxx };
+    const fn = scrapers[source];
+    if (fn) {
+      const results = await fn(query, page).catch(e => { logger.warn(`${source} failed: ${e.message}`); return []; });
+      const words = queryTokens(query);
+      const tagged = results.map(r => ({ ...r, source }));
+      const relevant = tagged.filter(r => isRelevant(r.title, words));
+      const others = tagged.filter(r => !isRelevant(r.title, words));
+      logger.info(`Single-source "${source}" search "${query}" page ${page}: ${results.length} results`);
+      return [...relevant, ...others];
+    }
+  }
+
   // PH API only has one page of results, skip it for subsequent pages
   const phPromise = page === 0
     ? searchPornhub(query).catch(e => { logger.warn(`pornhub failed: ${e.message}`); return []; })
     : Promise.resolve([]);
 
-  const [ph, xv, xn, xb] = await Promise.all([
+  const [ph, xv, xn, xb, fp] = await Promise.all([
     phPromise,
     searchXvideos(query, page).catch(e => { logger.warn(`xvideos failed: ${e.message}`); return []; }),
     searchXnxx(query, page).catch(e => { logger.warn(`xnxx failed: ${e.message}`); return []; }),
     searchXxbrits(query, page).catch(e => { logger.warn(`xxbrits failed: ${e.message}`); return []; }),
+    searchFpoxxx(query, page).catch(e => { logger.warn(`fpoxxx failed: ${e.message}`); return []; }),
   ]);
 
   // Tag each result with its source so the UI can show where it came from
-  const tag = (arr, source) => arr.map(r => ({ ...r, source }));
-  const tagged = [tag(ph, 'pornhub'), tag(xv, 'xvideos'), tag(xn, 'xnxx'), tag(xb, 'xxbrits')];
+  const tag = (arr, src) => arr.map(r => ({ ...r, source: src }));
+  const tagged = [tag(ph, 'pornhub'), tag(xv, 'xvideos'), tag(xn, 'xnxx'), tag(xb, 'xxbrits'), tag(fp, 'fpoxxx')];
 
   // Round-robin interleave so the first page shows results from all sites
   const interleaved = [];
@@ -394,8 +460,45 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0) {
   const others = interleaved.filter(r => !isRelevant(r.title, words));
   const final = [...relevant, ...others];
 
-  logger.info(`Combined search "${query}": pornhub=${ph.length} xvideos=${xv.length} xnxx=${xn.length} xxbrits=${xb.length} → ${final.length} total`);
+  logger.info(`Combined search "${query}" page ${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} → ${final.length} total`);
   return final;
+}
+
+// ── Trending videos (PH most viewed this week) ────────────────────────────────
+export async function getTrending() {
+  try {
+    const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=&page=1&per_page=32&ordering=mostviewed&period=weekly`;
+    const res = await axios.get(apiUrl, {
+      headers: { 'Accept': 'application/json', 'User-Agent': HEADERS['User-Agent'] },
+      timeout: 15000,
+    });
+    const videos = (typeof res.data === 'object' && Array.isArray(res.data.videos)) ? res.data.videos : [];
+    logger.info(`Trending: ${videos.length} videos from PH`);
+    return videos.filter(v => v.url && v.title).map(v => {
+      let duration = null;
+      if (v.duration) {
+        if (typeof v.duration === 'string' && v.duration.includes(':')) {
+          duration = v.duration;
+        } else {
+          const secs = parseInt(v.duration, 10);
+          if (!isNaN(secs) && secs > 0) {
+            duration = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+          }
+        }
+      }
+      const thumb = v.defaultThumb?.src || (Array.isArray(v.thumbs) && v.thumbs[0]?.src) || null;
+      return {
+        title: v.title.length > 80 ? v.title.slice(0, 77) + '...' : v.title,
+        url: v.url,
+        duration,
+        thumbnail: thumb && !thumb.startsWith('data:') ? thumb : null,
+        source: 'pornhub',
+      };
+    });
+  } catch (err) {
+    logger.warn(`getTrending failed: ${err.message}`);
+    return [];
+  }
 }
 
 // ── Video stream extraction ───────────────────────────────────────────────────

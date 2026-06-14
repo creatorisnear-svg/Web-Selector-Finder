@@ -5,423 +5,421 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>EverGuard Search</title>
 <style>
-  :root {
-    --bg: #0f0f0f;
-    --surface: #1a1a1a;
-    --surface2: #222;
-    --border: #2a2a2a;
-    --accent: #5865f2;
-    --accent-hover: #4752c4;
-    --text: #e8e8e8;
-    --muted: #888;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-height: 100vh; }
+:root {
+  --bg: #0f0f0f; --surface: #1a1a1a; --surface2: #222; --border: #2a2a2a;
+  --accent: #5865f2; --accent2: #4752c4; --text: #e8e8e8; --muted: #888; --muted2: #555;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; min-height: 100vh; }
 
-  header {
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    padding: .9rem 1.5rem;
-    display: flex;
-    align-items: center;
-    gap: .65rem;
-  }
-  header svg { flex-shrink: 0; }
-  header h1 { font-size: 1.05rem; font-weight: 700; color: var(--accent); letter-spacing: -.01em; }
+/* ── Header ──────────────────────────────────────────────────────────────── */
+header {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: .75rem 1.25rem; display: flex; align-items: center; gap: .6rem;
+  position: sticky; top: 0; z-index: 50;
+}
+header h1 { font-size: 1rem; font-weight: 700; color: var(--accent); letter-spacing: -.01em; }
 
-  .hero {
-    max-width: 680px;
-    margin: 3rem auto 0;
-    padding: 0 1rem;
-    text-align: center;
-  }
-  .hero p { color: var(--muted); font-size: .88rem; margin-bottom: 1.25rem; }
+/* ── Search area ──────────────────────────────────────────────────────────── */
+.search-area { max-width: 780px; margin: 1.75rem auto 0; padding: 0 1rem; }
+.search-row { display: flex; gap: .45rem; position: relative; }
+.search-row input {
+  flex: 1; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text); font-size: .97rem;
+  padding: .7rem 1rem; outline: none; transition: border-color .15s;
+}
+.search-row input::placeholder { color: var(--muted); }
+.search-row input:focus { border-color: var(--accent); }
+.search-row button {
+  background: var(--accent); border: none; border-radius: 8px; color: #fff;
+  cursor: pointer; font-size: .95rem; font-weight: 600; padding: .7rem 1.3rem;
+  transition: background .15s; white-space: nowrap; flex-shrink: 0;
+}
+.search-row button:hover { background: var(--accent2); }
+.search-row button:disabled { opacity: .5; cursor: default; }
 
-  .search-row {
-    display: flex;
-    gap: .5rem;
-  }
-  .search-row input {
-    flex: 1;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text);
-    font-size: .97rem;
-    padding: .7rem 1rem;
-    outline: none;
-    transition: border-color .15s;
-  }
-  .search-row input::placeholder { color: var(--muted); }
-  .search-row input:focus { border-color: var(--accent); }
-  .search-row button {
-    background: var(--accent);
-    border: none;
-    border-radius: 8px;
-    color: #fff;
-    cursor: pointer;
-    font-size: .95rem;
-    font-weight: 600;
-    padding: .7rem 1.3rem;
-    transition: background .15s;
-    white-space: nowrap;
-  }
-  .search-row button:hover { background: var(--accent-hover); }
-  .search-row button:disabled { opacity: .55; cursor: default; }
+/* Autocomplete */
+.autocomplete {
+  position: absolute; top: calc(100% + 4px); left: 0;
+  right: 80px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  z-index: 100; overflow: hidden; display: none;
+}
+.autocomplete.open { display: block; }
+.ac-item {
+  padding: .6rem 1rem; cursor: pointer; font-size: .88rem; color: var(--text);
+  display: flex; align-items: center; gap: .5rem;
+}
+.ac-item:hover, .ac-item.focused { background: var(--surface2); }
+.ac-item svg { flex-shrink: 0; color: var(--muted); }
 
-  #status {
-    text-align: center;
-    color: var(--muted);
-    padding: 2.5rem 1rem;
-    font-size: .88rem;
-  }
+/* Source chips */
+.source-chips {
+  display: flex; gap: .4rem; margin-top: .75rem;
+  overflow-x: auto; scrollbar-width: none; padding-bottom: 2px;
+}
+.source-chips::-webkit-scrollbar { display: none; }
+.chip {
+  border: 1px solid var(--border); border-radius: 20px; background: var(--surface);
+  color: var(--muted); cursor: pointer; font-size: .78rem; font-weight: 600;
+  padding: .3rem .75rem; white-space: nowrap; transition: all .15s; flex-shrink: 0;
+}
+.chip:hover { border-color: #444; color: var(--text); }
+.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip-ph.active     { background: #ff9000; border-color: #ff9000; color: #000; }
+.chip-xv.active     { background: #cc0000; border-color: #cc0000; color: #fff; }
+.chip-xnxx.active   { background: #f5c518; border-color: #f5c518; color: #000; }
+.chip-xxbrits.active{ background: #1e90ff; border-color: #1e90ff; color: #fff; }
+.chip-fpoxxx.active { background: #9b59b6; border-color: #9b59b6; color: #fff; }
 
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-    gap: .85rem;
-    max-width: 1200px;
-    margin: 1.75rem auto 3rem;
-    padding: 0 1rem;
-  }
+/* ── Status bar ───────────────────────────────────────────────────────────── */
+#status { text-align: center; color: var(--muted); padding: 1.5rem 1rem .5rem; font-size: .85rem; }
 
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-    cursor: pointer;
-    transition: transform .15s, border-color .15s, box-shadow .15s;
-  }
-  .card:hover {
-    transform: translateY(-3px);
-    border-color: var(--accent);
-    box-shadow: 0 6px 18px rgba(88,101,242,.18);
-  }
-  .thumb-wrap {
-    position: relative;
-    width: 100%;
-    aspect-ratio: 16 / 9;
-    background: #1c1c1c;
-    overflow: hidden;
-  }
-  .thumb-wrap img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-  }
-  .thumb-wrap .no-thumb {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: #444;
-    font-size: 2.2rem;
-  }
-  .thumb-wrap .play-overlay {
-    position: absolute;
-    inset: 0;
-    background: rgba(0,0,0,0);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background .15s;
-  }
-  .card:hover .play-overlay { background: rgba(0,0,0,.35); }
-  .play-overlay svg { opacity: 0; transition: opacity .15s; }
-  .card:hover .play-overlay svg { opacity: 1; }
-  .dur-badge {
-    position: absolute;
-    bottom: 5px;
-    right: 6px;
-    background: rgba(0,0,0,.78);
-    border-radius: 4px;
-    color: #fff;
-    font-size: .68rem;
-    font-weight: 600;
-    padding: 1px 5px;
-  }
-  .card-info {
-    padding: .6rem .7rem .65rem;
-  }
-  .card-title {
-    font-size: .81rem;
-    font-weight: 500;
-    line-height: 1.38;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    color: var(--text);
-  }
-  .card-meta {
-    display: flex;
-    align-items: center;
-    gap: .4rem;
-    margin-top: .4rem;
-  }
-  .badge {
-    border-radius: 4px;
-    font-size: .63rem;
-    font-weight: 700;
-    padding: 1px 5px;
-    text-transform: uppercase;
-    letter-spacing: .02em;
-  }
-  .badge-pornhub  { background: #ff9000; color: #000; }
-  .badge-xvideos  { background: #cc0000; color: #fff; }
-  .badge-xnxx     { background: #f5c518; color: #000; }
-  .badge-xxbrits  { background: #1e90ff; color: #fff; }
+/* ── Section heading ──────────────────────────────────────────────────────── */
+.section-head {
+  display: flex; align-items: center; gap: .5rem;
+  max-width: 1200px; margin: 1rem auto .5rem; padding: 0 1rem;
+  font-size: .95rem; font-weight: 700; color: var(--text);
+}
+.section-head span { color: var(--muted); font-weight: 400; font-size: .8rem; margin-left: auto; }
 
-  .modal-overlay {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,.88);
-    z-index: 1000;
-    align-items: center;
-    justify-content: center;
-    padding: 1rem;
-  }
-  .modal-overlay.open { display: flex; }
-  .modal {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    max-width: 900px;
-    width: 100%;
-    overflow: hidden;
-    box-shadow: 0 20px 60px rgba(0,0,0,.6);
-  }
-  .modal-top {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: .75rem;
-    padding: .8rem 1rem .75rem;
-  }
-  .modal-top-left { display: flex; align-items: center; gap: .5rem; flex: 1; min-width: 0; }
-  .modal-title { font-size: .88rem; font-weight: 600; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .close-btn {
-    background: none;
-    border: none;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 1.2rem;
-    line-height: 1;
-    flex-shrink: 0;
-    padding: 2px 4px;
-    border-radius: 4px;
-    transition: color .15s, background .15s;
-  }
-  .close-btn:hover { color: var(--text); background: var(--surface2); }
-  .modal-video-wrap {
-    position: relative;
-    width: 100%;
-    aspect-ratio: 16 / 9;
-    background: #000;
-  }
-  .modal-video-wrap video {
-    width: 100%;
-    height: 100%;
-    display: none;
-  }
-  .vid-status {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: .85rem;
-    color: var(--muted);
-    font-size: .88rem;
-  }
-  .vid-status a { color: var(--accent); }
-  .spinner {
-    width: 34px;
-    height: 34px;
-    border: 3px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin .7s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .modal-bottom {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: .6rem 1rem;
-    border-top: 1px solid var(--border);
-    gap: .5rem;
-  }
-  .modal-bottom a {
-    color: var(--accent);
-    font-size: .8rem;
-    text-decoration: none;
-  }
-  .modal-bottom a:hover { text-decoration: underline; }
+/* ── Card grid ────────────────────────────────────────────────────────────── */
+.grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: .85rem; max-width: 1200px; margin: 0 auto; padding: 0 1rem;
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  overflow: hidden; cursor: pointer; transition: transform .15s, border-color .15s, box-shadow .15s;
+}
+.card:hover { transform: translateY(-3px); border-color: var(--accent); box-shadow: 0 6px 18px rgba(88,101,242,.15); }
+.thumb-wrap { position: relative; width: 100%; aspect-ratio: 16/9; background: #1c1c1c; overflow: hidden; }
+.thumb-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb-wrap .no-thumb { display: flex; align-items: center; justify-content: center; height: 100%; color: #444; font-size: 2rem; }
+.play-overlay { position: absolute; inset: 0; background: transparent; display: flex; align-items: center; justify-content: center; transition: background .15s; }
+.card:hover .play-overlay { background: rgba(0,0,0,.35); }
+.play-overlay svg { opacity: 0; transition: opacity .15s; }
+.card:hover .play-overlay svg { opacity: 1; }
+.dur-badge { position: absolute; bottom: 5px; right: 6px; background: rgba(0,0,0,.78); border-radius: 4px; color: #fff; font-size: .67rem; font-weight: 600; padding: 1px 5px; }
+.card-info { padding: .55rem .65rem .6rem; }
+.card-title { font-size: .8rem; font-weight: 500; line-height: 1.38; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card-meta { display: flex; align-items: center; gap: .35rem; margin-top: .35rem; }
+.badge { border-radius: 4px; font-size: .62rem; font-weight: 700; padding: 1px 5px; text-transform: uppercase; letter-spacing: .02em; }
+.badge-pornhub  { background: #ff9000; color: #000; }
+.badge-xvideos  { background: #cc0000; color: #fff; }
+.badge-xnxx     { background: #f5c518; color: #000; }
+.badge-xxbrits  { background: #1e90ff; color: #fff; }
+.badge-fpoxxx   { background: #9b59b6; color: #fff; }
 
-  .pagination {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: .35rem;
-    padding: .5rem 1rem 3rem;
-    flex-wrap: wrap;
-  }
-  .pagination .pg-btn {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    cursor: pointer;
-    font-size: .88rem;
-    font-weight: 500;
-    min-width: 36px;
-    height: 36px;
-    padding: 0 .55rem;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: background .15s, border-color .15s, color .15s;
-    user-select: none;
-  }
-  .pagination .pg-btn:hover:not(:disabled):not(.active) {
-    background: var(--surface2);
-    border-color: #444;
-  }
-  .pagination .pg-btn.active {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
-    cursor: default;
-  }
-  .pagination .pg-btn:disabled {
-    opacity: .35;
-    cursor: default;
-  }
-  .pagination .pg-dots {
-    color: var(--muted);
-    font-size: .88rem;
-    padding: 0 .2rem;
-    user-select: none;
-  }
-  @media (max-width: 600px) {
-    .pagination { gap: .25rem; padding-bottom: 2rem; }
-    .pagination .pg-btn { min-width: 32px; height: 32px; font-size: .82rem; }
-  }
+/* ── Pagination ───────────────────────────────────────────────────────────── */
+.pagination {
+  display: flex; align-items: center; justify-content: center;
+  gap: .3rem; padding: 1.5rem 1rem 3rem; flex-wrap: wrap;
+}
+.pg-btn {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); cursor: pointer; font-size: .85rem; font-weight: 500;
+  min-width: 36px; height: 36px; padding: 0 .5rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .15s, border-color .15s; user-select: none;
+}
+.pg-btn:hover:not(:disabled):not(.active) { background: var(--surface2); border-color: #444; }
+.pg-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; cursor: default; }
+.pg-btn:disabled { opacity: .3; cursor: default; }
+.pg-dots { color: var(--muted); font-size: .85rem; padding: 0 .15rem; user-select: none; }
 
-  @media (max-width: 600px) {
-    .hero { margin-top: 1.25rem; }
-    .hero p { font-size: .83rem; margin-bottom: 1rem; }
-    .search-row { flex-direction: column; gap: .4rem; }
-    .search-row input { font-size: .95rem; padding: .65rem .9rem; }
-    .search-row button { padding: .65rem 1rem; font-size: .95rem; }
-    .grid { grid-template-columns: repeat(2, 1fr); gap: .5rem; margin: 1.25rem auto 2rem; }
-    .card-title { font-size: .78rem; }
-    .modal-overlay { padding: 0; align-items: flex-end; }
-    .modal {
-      border-radius: 16px 16px 0 0;
-      max-height: 95dvh;
-      overflow-y: auto;
-    }
-    .modal-top { padding: .7rem .85rem; }
-    .modal-title { font-size: .82rem; }
-    .modal-video-wrap { aspect-ratio: 16 / 10; }
-    .modal-bottom { padding: .55rem .85rem; }
-  }
-  @media (max-width: 380px) {
-    .grid { grid-template-columns: 1fr 1fr; gap: .35rem; }
-    .card-title { font-size: .75rem; }
-  }
+/* ── Video page (full overlay) ────────────────────────────────────────────── */
+.vp-overlay {
+  display: none; position: fixed; inset: 0; background: var(--bg);
+  z-index: 200; overflow: hidden;
+}
+.vp-overlay.open { display: flex; flex-direction: column; }
+.vp-topbar {
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: .65rem 1.25rem; display: flex; align-items: center; gap: .75rem;
+  flex-shrink: 0;
+}
+.vp-back {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); cursor: pointer; font-size: .83rem; padding: .35rem .75rem;
+  transition: background .15s; white-space: nowrap;
+}
+.vp-back:hover { background: var(--surface2); }
+.vp-topbar-title {
+  font-size: .88rem; font-weight: 600; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
+}
+.vp-body {
+  display: flex; flex: 1; overflow: hidden;
+}
+.vp-left {
+  flex: 0 0 65%; display: flex; flex-direction: column; overflow-y: auto; border-right: 1px solid var(--border);
+}
+.vp-player-wrap {
+  position: relative; width: 100%; aspect-ratio: 16/9;
+  background: #000; flex-shrink: 0;
+}
+.vp-player-wrap video { width: 100%; height: 100%; display: none; }
+.vp-vid-status {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: .75rem; color: var(--muted);
+}
+.vp-vid-status a { color: var(--accent); }
+.spinner { width: 34px; height: 34px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.vp-info { padding: .9rem 1.1rem; border-bottom: 1px solid var(--border); }
+.vp-info h2 { font-size: 1rem; font-weight: 700; line-height: 1.35; margin-bottom: .5rem; }
+.vp-info-meta { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.vp-info-meta a { color: var(--accent); font-size: .82rem; text-decoration: none; }
+.vp-info-meta a:hover { text-decoration: underline; }
+
+.vp-right {
+  flex: 0 0 35%; display: flex; flex-direction: column; overflow: hidden;
+}
+.vp-related-head {
+  padding: .75rem 1rem; font-size: .88rem; font-weight: 700;
+  border-bottom: 1px solid var(--border); flex-shrink: 0; color: var(--text);
+}
+.vp-related-list { flex: 1; overflow-y: auto; padding: .5rem; }
+.related-card {
+  display: flex; gap: .6rem; padding: .5rem; border-radius: 8px;
+  cursor: pointer; transition: background .15s; align-items: flex-start;
+}
+.related-card:hover { background: var(--surface2); }
+.related-thumb {
+  width: 120px; aspect-ratio: 16/9; border-radius: 6px; overflow: hidden;
+  background: #1c1c1c; flex-shrink: 0; position: relative;
+}
+.related-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.related-thumb .no-thumb { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #444; }
+.related-thumb .dur-badge { position: absolute; bottom: 3px; right: 4px; }
+.related-info { flex: 1; min-width: 0; }
+.related-title { font-size: .78rem; font-weight: 500; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.related-meta { margin-top: .3rem; }
+.related-loading { padding: 1.5rem; text-align: center; color: var(--muted); font-size: .85rem; }
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .vp-left  { flex: 0 0 60%; }
+  .vp-right { flex: 0 0 40%; }
+  .related-thumb { width: 96px; }
+}
+@media (max-width: 680px) {
+  .search-area { margin-top: 1.1rem; }
+  .search-row { flex-wrap: wrap; }
+  .search-row input { min-width: 0; }
+  .autocomplete { right: 0; }
+  .grid { grid-template-columns: repeat(2, 1fr); gap: .5rem; }
+  .card-title { font-size: .76rem; }
+  .pagination { padding: 1rem .5rem 2rem; gap: .2rem; }
+  .pg-btn { min-width: 32px; height: 32px; font-size: .8rem; }
+  .vp-overlay.open { flex-direction: column; }
+  .vp-body { flex-direction: column; overflow-y: auto; }
+  .vp-left { flex: none; border-right: none; overflow-y: visible; }
+  .vp-right { flex: none; overflow: visible; max-height: none; }
+  .vp-related-list { overflow: visible; }
+  .vp-player-wrap { aspect-ratio: 16/9; }
+}
+@media (max-width: 400px) {
+  .grid { gap: .35rem; }
+  .card-title { font-size: .73rem; }
+}
 </style>
 </head>
 <body>
 
 <header>
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#5865f2" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#5865f2" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
   </svg>
   <h1>EverGuard Search</h1>
 </header>
 
-<div class="hero">
-  <p>Search across PornHub, Xvideos, XNXX &amp; XXBrits &mdash; no account, no tracking.</p>
-  <div class="search-row">
+<div class="search-area">
+  <div class="search-row" id="search-row">
     <input id="q" type="search" placeholder="Search videos..." autocomplete="off" spellcheck="false"/>
     <button id="search-btn" onclick="doSearch()">Search</button>
+    <div class="autocomplete" id="autocomplete"></div>
+  </div>
+  <div class="source-chips" id="source-chips">
+    <button class="chip active"          data-src="all">All Sites</button>
+    <button class="chip chip-ph"         data-src="pornhub">PornHub</button>
+    <button class="chip chip-xv"         data-src="xvideos">Xvideos</button>
+    <button class="chip chip-xnxx"       data-src="xnxx">XNXX</button>
+    <button class="chip chip-xxbrits"    data-src="xxbrits">XXBrits</button>
+    <button class="chip chip-fpoxxx"     data-src="fpoxxx">FPoxxx</button>
   </div>
 </div>
 
-<div id="status" class="status">Enter a search term above to get started.</div>
-<div id="grid" class="grid"></div>
+<div id="status" class="status"></div>
+
+<div id="trending-head" class="section-head" style="display:none">
+  🔥 Trending This Week <span>from PornHub</span>
+</div>
+<div id="main-grid" class="grid"></div>
 <div id="pagination" class="pagination" style="display:none"></div>
 
-<div class="modal-overlay" id="modal" onclick="handleOverlayClick(event)">
-  <div class="modal">
-    <div class="modal-top">
-      <div class="modal-top-left">
-        <span id="modal-badge"></span>
-        <div class="modal-title" id="modal-title"></div>
+<!-- ── Video page overlay ─────────────────────────────────────────────────── -->
+<div class="vp-overlay" id="vp-overlay">
+  <div class="vp-topbar">
+    <button class="vp-back" onclick="closeVideoPage()">&#8592; Back</button>
+    <div class="vp-topbar-title" id="vp-topbar-title"></div>
+  </div>
+  <div class="vp-body">
+    <div class="vp-left">
+      <div class="vp-player-wrap">
+        <div class="vp-vid-status" id="vp-vid-status">
+          <div class="spinner"></div>
+          <span>Loading video&hellip;</span>
+        </div>
+        <video id="vp-vid" controls preload="auto"></video>
       </div>
-      <button class="close-btn" onclick="closeModal()" title="Close">&#x2715;</button>
-    </div>
-    <div class="modal-video-wrap">
-      <div class="vid-status" id="vid-status">
-        <div class="spinner"></div>
-        <span>Loading video&hellip;</span>
+      <div class="vp-info">
+        <h2 id="vp-title"></h2>
+        <div class="vp-info-meta">
+          <span id="vp-badge"></span>
+          <a id="vp-link" href="#" target="_blank" rel="noopener noreferrer">Open source page &#x2197;</a>
+        </div>
       </div>
-      <video id="vid" controls preload="auto"></video>
     </div>
-    <div class="modal-bottom">
-      <a id="modal-link" href="#" target="_blank" rel="noopener noreferrer">Open source page &#x2197;</a>
+    <div class="vp-right">
+      <div class="vp-related-head">Up Next &amp; Related</div>
+      <div class="vp-related-list" id="vp-related"></div>
     </div>
   </div>
 </div>
 
 <script>
 (function() {
-  var qEl        = document.getElementById('q');
-  var gridEl     = document.getElementById('grid');
-  var statusEl   = document.getElementById('status');
-  var searchBtn  = document.getElementById('search-btn');
-  var paginEl    = document.getElementById('pagination');
-  var modal      = document.getElementById('modal');
-  var modalTitle = document.getElementById('modal-title');
-  var modalBadge = document.getElementById('modal-badge');
-  var modalLink  = document.getElementById('modal-link');
-  var vidEl      = document.getElementById('vid');
-  var vidStatus  = document.getElementById('vid-status');
+  /* ── DOM refs ────────────────────────────────────────────────────────────── */
+  var qEl         = document.getElementById('q');
+  var gridEl      = document.getElementById('main-grid');
+  var statusEl    = document.getElementById('status');
+  var searchBtn   = document.getElementById('search-btn');
+  var paginEl     = document.getElementById('pagination');
+  var acEl        = document.getElementById('autocomplete');
+  var trendHead   = document.getElementById('trending-head');
+  var vpOverlay   = document.getElementById('vp-overlay');
+  var vpTitle     = document.getElementById('vp-title');
+  var vpTopTitle  = document.getElementById('vp-topbar-title');
+  var vpBadge     = document.getElementById('vp-badge');
+  var vpLink      = document.getElementById('vp-link');
+  var vpVid       = document.getElementById('vp-vid');
+  var vpVidStatus = document.getElementById('vp-vid-status');
+  var vpRelated   = document.getElementById('vp-related');
+
+  /* ── State ───────────────────────────────────────────────────────────────── */
+  var currentQuery  = '';
+  var currentPage   = 0;
+  var maxKnownPage  = 0;
+  var hasNextPage   = false;
+  var currentSource = 'all';
+  var acTimer       = null;
+  var acFocusIdx    = -1;
 
   var BADGE = {
     pornhub: { cls: 'badge badge-pornhub', label: 'PH'      },
     xvideos: { cls: 'badge badge-xvideos', label: 'XV'      },
     xnxx:    { cls: 'badge badge-xnxx',    label: 'XNXX'   },
-    xxbrits: { cls: 'badge badge-xxbrits', label: 'XXBrits' }
+    xxbrits: { cls: 'badge badge-xxbrits', label: 'XXBrits' },
+    fpoxxx:  { cls: 'badge badge-fpoxxx',  label: 'FPoxxx'  },
   };
 
-  // ── State ──────────────────────────────────────────────────────────────────
-  var currentQuery   = '';
-  var currentPage    = 0;    // 0-indexed internally
-  var maxKnownPage   = 0;    // highest page with results
-  var hasNextPage    = false; // whether last fetch returned results
+  /* ── Source chip selection ───────────────────────────────────────────────── */
+  document.getElementById('source-chips').addEventListener('click', function(e) {
+    var btn = e.target.closest('.chip');
+    if (!btn) return;
+    document.querySelectorAll('.chip').forEach(function(c) { c.classList.remove('active'); });
+    btn.classList.add('active');
+    currentSource = btn.dataset.src;
+    if (currentQuery) {
+      currentPage = 0; maxKnownPage = 0; hasNextPage = false;
+      fetchPage(0);
+    }
+  });
 
-  qEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') doSearch(); });
+  /* ── Autocomplete ────────────────────────────────────────────────────────── */
+  qEl.addEventListener('input', function() {
+    clearTimeout(acTimer);
+    var q = qEl.value.trim();
+    if (!q) { closeAC(); return; }
+    acTimer = setTimeout(function() { loadSuggestions(q); }, 180);
+  });
 
-  // ── New search (always page 0) ─────────────────────────────────────────────
+  qEl.addEventListener('keydown', function(e) {
+    var items = acEl.querySelectorAll('.ac-item');
+    if (e.key === 'Enter') {
+      if (acFocusIdx >= 0 && items[acFocusIdx]) {
+        qEl.value = items[acFocusIdx].dataset.val;
+        closeAC();
+        doSearch();
+      } else {
+        closeAC();
+        doSearch();
+      }
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      acFocusIdx = Math.min(acFocusIdx + 1, items.length - 1);
+      updateACFocus(items);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      acFocusIdx = Math.max(acFocusIdx - 1, -1);
+      updateACFocus(items);
+    } else if (e.key === 'Escape') {
+      closeAC();
+    }
+  });
+
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('#search-row')) closeAC();
+  });
+
+  function loadSuggestions(q) {
+    fetch('/api/suggestions?q=' + encodeURIComponent(q))
+      .then(function(r) { return r.json(); })
+      .then(function(d) { renderAC(d.suggestions || []); })
+      .catch(function() {});
+  }
+
+  function renderAC(items) {
+    if (!items.length) { closeAC(); return; }
+    acFocusIdx = -1;
+    acEl.innerHTML = items.map(function(s) {
+      return '<div class="ac-item" data-val="' + esc(s) + '">' +
+        '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>' +
+        esc(s) + '</div>';
+    }).join('');
+    acEl.querySelectorAll('.ac-item').forEach(function(el) {
+      el.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        qEl.value = el.dataset.val;
+        closeAC();
+        doSearch();
+      });
+    });
+    acEl.classList.add('open');
+  }
+
+  function closeAC() { acEl.classList.remove('open'); acEl.innerHTML = ''; acFocusIdx = -1; }
+
+  function updateACFocus(items) {
+    items.forEach(function(el, i) { el.classList.toggle('focused', i === acFocusIdx); });
+    if (acFocusIdx >= 0 && items[acFocusIdx]) qEl.value = items[acFocusIdx].dataset.val;
+  }
+
+  /* ── Search ──────────────────────────────────────────────────────────────── */
   function doSearch() {
     var q = qEl.value.trim();
     if (!q) return;
-    currentQuery  = q;
-    currentPage   = 0;
-    maxKnownPage  = 0;
-    hasNextPage   = false;
+    closeAC();
+    currentQuery = q; currentPage = 0; maxKnownPage = 0; hasNextPage = false;
+    trendHead.style.display = 'none';
     fetchPage(0);
   }
 
-  // ── Go to a specific page ──────────────────────────────────────────────────
   function goToPage(p) {
     if (p < 0) return;
     currentPage = p;
@@ -429,14 +427,16 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  // ── Fetch results for a page ───────────────────────────────────────────────
   function fetchPage(p) {
     gridEl.innerHTML = '';
     paginEl.style.display = 'none';
     statusEl.textContent = 'Searching\u2026';
     searchBtn.disabled = true;
 
-    fetch('/api/search?q=' + encodeURIComponent(currentQuery) + '&page=' + p)
+    var url = '/api/search?q=' + encodeURIComponent(currentQuery) + '&page=' + p;
+    if (currentSource && currentSource !== 'all') url += '&source=' + encodeURIComponent(currentSource);
+
+    fetch(url)
       .then(function(r) { return r.json(); })
       .then(function(data) {
         searchBtn.disabled = false;
@@ -445,12 +445,8 @@
           statusEl.textContent = 'No results found. Try a different search.';
           return;
         }
-        if (results.length === 0) {
-          // Went past the last page — jump back
-          goToPage(maxKnownPage);
-          return;
-        }
-        hasNextPage  = results.length > 0;
+        if (results.length === 0) { goToPage(maxKnownPage); return; }
+        hasNextPage = results.length > 0;
         if (p > maxKnownPage) maxKnownPage = p;
         statusEl.textContent = 'Page ' + (p + 1) + ' \u2014 ' + results.length + ' results';
         results.forEach(function(r) { gridEl.appendChild(makeCard(r)); });
@@ -462,83 +458,30 @@
       });
   }
 
-  // ── Pagination bar (PH-style numbered pages) ──────────────────────────────
-  function renderPagination() {
-    paginEl.innerHTML = '';
-    paginEl.style.display = 'flex';
-
-    var cur    = currentPage;          // 0-indexed
-    var dispCur = cur + 1;             // 1-indexed for display
-    // We always show at least up to current page; if hasNextPage, one more exists
-    var lastKnown = maxKnownPage + 1;  // 1-indexed highest confirmed page
-    var showMax   = hasNextPage ? lastKnown + 1 : lastKnown; // speculative next
-
-    // Build visible page numbers around current
-    var pages = buildPageRange(dispCur, showMax);
-
-    // ← Prev button
-    var prev = btn('\u2190 Prev', cur === 0);
-    prev.addEventListener('click', function() { if (cur > 0) goToPage(cur - 1); });
-    paginEl.appendChild(prev);
-
-    pages.forEach(function(item) {
-      if (item === '\u2026') {
-        var dots = document.createElement('span');
-        dots.className = 'pg-dots';
-        dots.textContent = '\u2026';
-        paginEl.appendChild(dots);
-      } else {
-        var b = btn(String(item), false, item === dispCur);
-        (function(pg) {
-          b.addEventListener('click', function() { if (pg !== dispCur) goToPage(pg - 1); });
-        })(item);
-        paginEl.appendChild(b);
-      }
-    });
-
-    // Next → button
-    var next = btn('Next \u2192', !hasNextPage && cur >= maxKnownPage);
-    next.addEventListener('click', function() { goToPage(cur + 1); });
-    paginEl.appendChild(next);
+  /* ── Trending (homepage) ─────────────────────────────────────────────────── */
+  function loadTrending() {
+    statusEl.textContent = 'Loading trending\u2026';
+    trendHead.style.display = 'none';
+    fetch('/api/trending')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var results = data.results || [];
+        if (!results.length) { statusEl.textContent = 'Could not load trending. Search above to get started.'; return; }
+        statusEl.textContent = '';
+        trendHead.style.display = 'flex';
+        results.forEach(function(r) { gridEl.appendChild(makeCard(r)); });
+      })
+      .catch(function() { statusEl.textContent = 'Search above to get started.'; });
   }
 
-  // Returns array of page numbers (1-indexed) and '…' ellipsis strings
-  function buildPageRange(cur, total) {
-    if (total <= 7) {
-      var out = [];
-      for (var i = 1; i <= total; i++) out.push(i);
-      return out;
-    }
-    var result = [];
-    var delta = 2;
-    var left  = cur - delta;
-    var right = cur + delta;
-    var pages = [];
-    for (var i = 1; i <= total; i++) {
-      if (i === 1 || i === total || (i >= left && i <= right)) pages.push(i);
-    }
-    var prev = 0;
-    for (var j = 0; j < pages.length; j++) {
-      if (pages[j] - prev > 1) result.push('\u2026');
-      result.push(pages[j]);
-      prev = pages[j];
-    }
-    return result;
-  }
-
-  function btn(label, disabled, active) {
-    var b = document.createElement('button');
-    b.className = 'pg-btn' + (active ? ' active' : '');
-    b.textContent = label;
-    b.disabled = !!disabled;
-    return b;
-  }
-
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  /* ── Card builder ────────────────────────────────────────────────────────── */
   function esc(s) {
-    return String(s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function badgeHtml(source) {
+    var b = BADGE[source] || { cls: 'badge badge-xvideos', label: source || '' };
+    return '<span class="' + b.cls + '">' + b.label + '</span>';
   }
 
   function makeCard(r) {
@@ -552,7 +495,7 @@
     card.innerHTML =
       '<div class="thumb-wrap">' + thumbInner +
         '<div class="play-overlay">' +
-          '<svg width="42" height="42" viewBox="0 0 42 42" fill="none">' +
+          '<svg width="40" height="40" viewBox="0 0 42 42" fill="none">' +
             '<circle cx="21" cy="21" r="21" fill="rgba(0,0,0,.55)"/>' +
             '<polygon points="17,13 33,21 17,29" fill="white"/>' +
           '</svg>' +
@@ -560,60 +503,163 @@
       '</div>' +
       '<div class="card-info">' +
         '<div class="card-title">' + esc(r.title) + '</div>' +
-        '<div class="card-meta"><span class="' + b.cls + '">' + b.label + '</span></div>' +
+        '<div class="card-meta">' + badgeHtml(r.source) + '</div>' +
       '</div>';
-    card.addEventListener('click', function() { openVideo(r); });
+    card.addEventListener('click', function() { openVideoPage(r); });
     return card;
   }
 
-  // ── Video player ───────────────────────────────────────────────────────────
-  function openVideo(r) {
+  /* ── Pagination ──────────────────────────────────────────────────────────── */
+  function renderPagination() {
+    paginEl.innerHTML = '';
+    paginEl.style.display = 'flex';
+    var cur = currentPage;
+    var lastKnown = maxKnownPage + 1;
+    var showMax = hasNextPage ? lastKnown + 1 : lastKnown;
+    var pages = buildPageRange(cur + 1, showMax);
+
+    var prev = pgBtn('\u2190', cur === 0, false, function() { if (cur > 0) goToPage(cur - 1); });
+    paginEl.appendChild(prev);
+
+    pages.forEach(function(item) {
+      if (item === '\u2026') {
+        var d = document.createElement('span');
+        d.className = 'pg-dots'; d.textContent = '\u2026';
+        paginEl.appendChild(d);
+      } else {
+        (function(pg) {
+          paginEl.appendChild(pgBtn(String(pg), false, pg === cur + 1, function() { if (pg !== cur + 1) goToPage(pg - 1); }));
+        })(item);
+      }
+    });
+
+    var next = pgBtn('\u2192', !hasNextPage && cur >= maxKnownPage, false, function() { goToPage(cur + 1); });
+    paginEl.appendChild(next);
+  }
+
+  function pgBtn(label, disabled, active, fn) {
+    var b = document.createElement('button');
+    b.className = 'pg-btn' + (active ? ' active' : '');
+    b.textContent = label;
+    b.disabled = !!disabled;
+    if (fn) b.addEventListener('click', fn);
+    return b;
+  }
+
+  function buildPageRange(cur, total) {
+    if (total <= 7) { var o = []; for (var i = 1; i <= total; i++) o.push(i); return o; }
+    var result = [], prev = 0, delta = 2;
+    var raw = [];
+    for (var i = 1; i <= total; i++) {
+      if (i === 1 || i === total || (i >= cur - delta && i <= cur + delta)) raw.push(i);
+    }
+    for (var j = 0; j < raw.length; j++) {
+      if (raw[j] - prev > 1) result.push('\u2026');
+      result.push(raw[j]); prev = raw[j];
+    }
+    return result;
+  }
+
+  /* ── Video page ──────────────────────────────────────────────────────────── */
+  function openVideoPage(r) {
     var b = BADGE[r.source] || { cls: 'badge badge-xvideos', label: r.source || '' };
-    modalTitle.textContent = r.title;
-    modalBadge.className   = b.cls;
-    modalBadge.textContent = b.label;
-    modalLink.href = r.url;
-    vidEl.style.display    = 'none';
-    vidStatus.style.display = 'flex';
-    vidStatus.innerHTML    = '<div class="spinner"></div><span>Loading video\u2026</span>';
-    modal.classList.add('open');
-    vidEl.pause();
-    vidEl.removeAttribute('src');
-    vidEl.load();
+    vpTitle.textContent    = r.title;
+    vpTopTitle.textContent = r.title;
+    vpBadge.className      = b.cls;
+    vpBadge.textContent    = b.label;
+    vpLink.href            = r.url;
+    vpVid.style.display    = 'none';
+    vpVidStatus.style.display = 'flex';
+    vpVidStatus.innerHTML  = '<div class="spinner"></div><span>Loading video\u2026</span>';
+    vpRelated.innerHTML    = '<div class="related-loading"><div class="spinner" style="margin:0 auto .5rem"></div>Loading related\u2026</div>';
+    vpOverlay.classList.add('open');
+    document.body.style.overflow = 'hidden';
+
+    vpVid.pause();
+    vpVid.removeAttribute('src');
+    vpVid.load();
 
     fetch('/api/play-url?url=' + encodeURIComponent(r.url))
       .then(function(res) { return res.json(); })
       .then(function(data) {
         if (data.playUrl) {
-          vidEl.src = data.playUrl;
-          vidEl.style.display = 'block';
-          vidStatus.style.display = 'none';
-          vidEl.play().catch(function() {});
+          vpVid.src = data.playUrl;
+          vpVid.style.display = 'block';
+          vpVidStatus.style.display = 'none';
+          vpVid.play().catch(function() {});
         } else {
-          vidStatus.innerHTML = '<span>Could not load. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
+          vpVidStatus.innerHTML = '<span>Could not load. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
         }
       })
       .catch(function() {
-        vidStatus.innerHTML = '<span>Failed to load. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
+        vpVidStatus.innerHTML = '<span>Failed to load. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
       });
+
+    loadRelated(r);
   }
 
-  function closeModal() {
-    modal.classList.remove('open');
-    vidEl.pause();
-    vidEl.removeAttribute('src');
-    vidEl.load();
-    vidEl.style.display    = 'none';
-    vidStatus.style.display = 'flex';
-    vidStatus.innerHTML    = '<div class="spinner"></div><span>Loading video\u2026</span>';
+  function loadRelated(r) {
+    var keywords = extractKeywords(r.title);
+    if (!keywords) { vpRelated.innerHTML = ''; return; }
+    var src = (currentSource && currentSource !== 'all') ? currentSource : (r.source || '');
+    var url = '/api/search?q=' + encodeURIComponent(keywords) + '&page=0';
+    if (src) url += '&source=' + encodeURIComponent(src);
+    fetch(url)
+      .then(function(res) { return res.json(); })
+      .then(function(data) {
+        var results = (data.results || []).filter(function(x) { return x.url !== r.url; }).slice(0, 16);
+        if (!results.length) { vpRelated.innerHTML = '<div class="related-loading">No related videos found.</div>'; return; }
+        vpRelated.innerHTML = '';
+        results.forEach(function(rel) { vpRelated.appendChild(makeRelatedCard(rel)); });
+      })
+      .catch(function() { vpRelated.innerHTML = ''; });
   }
 
-  function handleOverlayClick(e) { if (e.target === modal) closeModal(); }
-  document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeModal(); });
+  function extractKeywords(title) {
+    var STOP = new Set(['the','and','for','with','that','this','from','but','all','not','are','was','she','her','his','him','they']);
+    var words = title.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(function(w) { return w.length >= 3 && !STOP.has(w); });
+    return words.slice(0, 3).join(' ') || null;
+  }
 
-  window.doSearch           = doSearch;
-  window.closeModal         = closeModal;
-  window.handleOverlayClick = handleOverlayClick;
+  function makeRelatedCard(r) {
+    var wrap = document.createElement('div');
+    wrap.className = 'related-card';
+    var thumbInner = r.thumbnail
+      ? '<img src="' + esc(r.thumbnail) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">'
+      : '<div class="no-thumb">\u25b6</div>';
+    var durHtml = r.duration ? '<span class="dur-badge">' + esc(r.duration) + '</span>' : '';
+    wrap.innerHTML =
+      '<div class="related-thumb">' + thumbInner + durHtml + '</div>' +
+      '<div class="related-info">' +
+        '<div class="related-title">' + esc(r.title) + '</div>' +
+        '<div class="related-meta">' + badgeHtml(r.source) + '</div>' +
+      '</div>';
+    wrap.addEventListener('click', function() {
+      vpVid.pause();
+      openVideoPage(r);
+    });
+    return wrap;
+  }
+
+  function closeVideoPage() {
+    vpOverlay.classList.remove('open');
+    document.body.style.overflow = '';
+    vpVid.pause();
+    vpVid.removeAttribute('src');
+    vpVid.load();
+    vpVid.style.display = 'none';
+    vpVidStatus.style.display = 'flex';
+    vpVidStatus.innerHTML = '<div class="spinner"></div><span>Loading video\u2026</span>';
+  }
+
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeVideoPage(); });
+
+  /* ── Exports ─────────────────────────────────────────────────────────────── */
+  window.doSearch       = doSearch;
+  window.closeVideoPage = closeVideoPage;
+
+  /* ── Boot ────────────────────────────────────────────────────────────────── */
+  loadTrending();
 })();
 </script>
 </body>

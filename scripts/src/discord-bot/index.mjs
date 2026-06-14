@@ -19,7 +19,7 @@ import {
   TextInputBuilder,
   TextInputStyle,
 } from 'discord.js';
-import { searchVideos, getVideoStreamUrl, getDirectMp4Url, downloadVideoClip, cleanupClip } from './scraper.mjs';
+import { searchVideos, getVideoStreamUrl, getDirectMp4Url, downloadVideoClip, cleanupClip, getTrending } from './scraper.mjs';
 import { logger } from './logger.mjs';
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -297,6 +297,7 @@ const healthServer = http.createServer(async (req, res) => {
     const reqUrl = new URL(req.url, 'http://localhost');
     const q = (reqUrl.searchParams.get('q') || '').trim();
     const page = Math.max(0, parseInt(reqUrl.searchParams.get('page') || '0', 10) || 0);
+    const source = (reqUrl.searchParams.get('source') || '').trim().toLowerCase() || null;
     res.setHeader('Access-Control-Allow-Origin', '*');
     if (!q) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -304,13 +305,40 @@ const healthServer = http.createServer(async (req, res) => {
       return;
     }
     try {
-      const results = await searchVideos('', q, page);
+      const results = await searchVideos('', q, page, source);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ results, page }));
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Search failed' }));
     }
+    return;
+  }
+
+  // ── Trending videos ────────────────────────────────────────────────────────
+  if (path === '/api/trending') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    try {
+      const results = await getTrending();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ results }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to load trending' }));
+    }
+    return;
+  }
+
+  // ── Search suggestions (autocomplete) ─────────────────────────────────────
+  if (path === '/api/suggestions') {
+    const reqUrl = new URL(req.url, 'http://localhost');
+    const q = (reqUrl.searchParams.get('q') || '').toLowerCase().trim();
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    const matches = q
+      ? POPULAR_SEARCHES.filter(s => s.includes(q)).slice(0, 8)
+      : POPULAR_SEARCHES.slice(0, 8);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ suggestions: matches }));
     return;
   }
 
