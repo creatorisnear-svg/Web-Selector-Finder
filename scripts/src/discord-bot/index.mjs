@@ -3,6 +3,7 @@ import https from 'https';
 import { URL } from 'url';
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
+import { randomBytes } from 'crypto';
 import {
   Client,
   GatewayIntentBits,
@@ -298,34 +299,37 @@ async function handleVideoStream(req, res) {
 }
 
 // ── Query obfuscation ─────────────────────────────────────────────────────────
-// The browser encodes every search query with XOR + base64url before it hits the
-// wire. Render's HTTP access logs only ever see scrambled bytes, not the real term.
-// The same key must be kept in sync with web-ui.html's _enc() function.
-// This is not cryptographically secret (key is in source), but it defeats
-// automated log scanning and casual log browsing — the primary threat model.
-const _OBF_KEY = [0x4b,0x7e,0x21,0x5d,0x93,0x6f,0x3a,0xb2,0x08,0xd4,0x51,0xc7,0x2e,0x89,0xf0,0x15];
+// A fresh 16-byte key is generated every time the server starts. It's injected
+// into the HTML page at serve time so the browser uses the same key for encoding.
+// Because the key only lives in memory and is never written anywhere, logs from
+// past sessions are permanently undecodable — even to someone with the source code.
+const _SESSION_KEY = [...randomBytes(16)]; // e.g. [183, 42, 7, …] — different every restart
 function _dec(encoded) {
   if (!encoded) return '';
   try {
-    // Accept both plain text (legacy/direct calls) and base64url-encoded strings.
-    // Plain text won't survive Buffer.from(…,'base64') cleanly if it has spaces/special chars,
-    // but base64url strings never contain spaces — use that to distinguish.
-    if (!/^[A-Za-z0-9_-]+$/.test(encoded)) return encoded; // plain text fallback
+    // Plain text (direct API calls / curl) never passes as clean base64url — fall through.
+    if (!/^[A-Za-z0-9_-]+$/.test(encoded)) return encoded;
     const pad = encoded.replace(/-/g, '+').replace(/_/g, '/');
     const padded = pad + '=='.slice(0, (4 - pad.length % 4) % 4);
     const buf = Buffer.from(padded, 'base64');
     let out = '';
-    for (let i = 0; i < buf.length; i++) out += String.fromCharCode(buf[i] ^ _OBF_KEY[i % _OBF_KEY.length]);
-    // Reverse the string (client reverses before encoding)
-    return out.split('').reverse().join('');
+    for (let i = 0; i < buf.length; i++) out += String.fromCharCode(buf[i] ^ _SESSION_KEY[i % _SESSION_KEY.length]);
+    return out.split('').reverse().join(''); // client reversed before encoding
   } catch {
-    return encoded; // fallback: use as-is
+    return encoded;
   }
 }
 
 // ── HTTP server ───────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '5000', 10);
-const WEB_UI_HTML = readFileSync(new URL('./web-ui.html', import.meta.url).pathname, 'utf8');
+// Inject the session key into the HTML template once at startup.
+// The placeholder /*__OBF_KEY__*/[] is replaced with the actual runtime array.
+// Any page loaded after a restart automatically picks up the new key.
+const _WEB_UI_TEMPLATE = readFileSync(new URL('./web-ui.html', import.meta.url).pathname, 'utf8');
+const WEB_UI_HTML = _WEB_UI_TEMPLATE.replace(
+  '/*__OBF_KEY__*/[]',
+  JSON.stringify(_SESSION_KEY)
+);
 
 const healthServer = http.createServer(async (req, res) => {
   const path = (req.url || '/').split('?')[0];

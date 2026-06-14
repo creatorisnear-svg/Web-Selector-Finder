@@ -414,10 +414,10 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   var currentQuery  = '';
 
   /* ── Query obfuscation ───────────────────────────────────────────────────────
-     Encodes the search term before it hits the wire so Render's HTTP access
-     logs never see the real text — only scrambled base64url characters.
-     Must use the same key as _OBF_KEY in index.mjs.                          */
-  var _K = [0x4b,0x7e,0x21,0x5d,0x93,0x6f,0x3a,0xb2,0x08,0xd4,0x51,0xc7,0x2e,0x89,0xf0,0x15];
+     _K is injected by the server at serve time (see index.mjs).
+     It is a fresh random key generated on every server restart, so logs from
+     past sessions are permanently undecodable even with the source code.      */
+  var _K = /*__OBF_KEY__*/[];
   function _enc(s) {
     try {
       var r = s.split('').reverse().join('');
