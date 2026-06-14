@@ -364,10 +364,18 @@ const healthServer = http.createServer(async (req, res) => {
     return;
   }
 
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('OK');
+  // Health check — GET / or /health — UptimeRobot pings this
+  if (path === '/' || path === '/health') {
+    const payload = JSON.stringify({ status: 'ok', uptime: process.uptime() | 0 });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(payload);
+    return;
+  }
+
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('Not found');
 });
-healthServer.listen(PORT, () => {
+healthServer.listen(PORT, '0.0.0.0', () => {
   logger.info(`Health check server listening on port ${PORT}`);
 });
 

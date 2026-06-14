@@ -42,7 +42,7 @@ ENV NODE_ENV=production
 ENV LOG_LEVEL=info
 ENV PORT=5000
 
-# Expose the health check port Koyeb probes
+# Expose the health check port (Render / Koyeb probe + UptimeRobot)
 EXPOSE 5000
 
 CMD ["pnpm", "--filter", "@workspace/scripts", "run", "discord-bot"]
