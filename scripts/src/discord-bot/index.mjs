@@ -173,7 +173,6 @@ async function handleStreamProxy(req, res) {
     const ff = spawn('ffmpeg', [
       '-headers', ffHeaders,
       '-i', raw,
-      '-t', '75',
       '-c:v', 'copy',
       '-c:a', 'copy',
       '-bsf:a', 'aac_adtstoasc',
@@ -433,37 +432,39 @@ process.on('uncaughtException', (err) => {
 
 const PAGE_SIZE = 5;
 
-const SOURCE_LABELS = { xvideos: 'XV', xnxx: 'XNXX', xxbrits: 'XXBrits' };
+const SOURCE_LABELS = { pornhub: 'PH', xvideos: 'XV', xnxx: 'XNXX', xxbrits: 'XXBrits' };
 
 function buildResultsPage(results, page, key, userId, exhausted = false) {
   const loadedPages = Math.ceil(results.length / PAGE_SIZE);
   const start = page * PAGE_SIZE;
   const pageItems = results.slice(start, start + PAGE_SIZE);
 
-  // "Next" is enabled whenever either we have more loaded items OR more pages
-  // can still be fetched from the source sites.
   const hasMoreLoaded = page < loadedPages - 1;
   const canFetchMore = !exhausted;
   const nextEnabled = hasMoreLoaded || canFetchMore;
-
   const totalLabel = exhausted ? `${loadedPages}` : `${loadedPages}+`;
 
-  const embed = new EmbedBuilder()
+  // Header embed
+  const headerEmbed = new EmbedBuilder()
     .setTitle(`🔎 Search Results — Page ${page + 1} of ${totalLabel}`)
     .setColor(0x5865F2)
-    .setDescription(
-      pageItems.map((r, i) => {
-        const num = start + i + 1;
-        const dur = r.duration ? ` \`${r.duration}\`` : '';
-        const src = r.source ? ` \`${SOURCE_LABELS[r.source] || r.source}\`` : '';
-        return `**${num}.**${src} ${r.title}${dur}`;
-      }).join('\n\n')
-    )
     .setFooter({
       text: exhausted
-        ? `${results.length} videos from Xvideos + XNXX + XXBrits • End of results`
-        : `${results.length}+ videos from Xvideos + XNXX + XXBrits • More load as you browse`
+        ? `${results.length} videos from PH + Xvideos + XNXX + XXBrits • End of results`
+        : `${results.length}+ videos from PH + Xvideos + XNXX + XXBrits • More load as you browse`
     });
+
+  // One embed per result with thumbnail
+  const resultEmbeds = pageItems.map((r, i) => {
+    const num = start + i + 1;
+    const dur = r.duration ? ` \`${r.duration}\`` : '';
+    const src = r.source ? ` \`${SOURCE_LABELS[r.source] || r.source}\`` : '';
+    const e = new EmbedBuilder()
+      .setColor(0x5865F2)
+      .setDescription(`**${num}.**${src} ${r.title}${dur}`);
+    if (r.thumbnail) e.setThumbnail(r.thumbnail);
+    return e;
+  });
 
   const selectRow = new ActionRowBuilder().addComponents(
     pageItems.map((_, i) =>
@@ -491,7 +492,7 @@ function buildResultsPage(results, page, key, userId, exhausted = false) {
       .setStyle(ButtonStyle.Success)
   );
 
-  return { embeds: [embed], components: [selectRow, navRow] };
+  return { embeds: [headerEmbed, ...resultEmbeds], components: [selectRow, navRow] };
 }
 
 const YTDLP_TIMEOUT_MS = 12000;
@@ -507,8 +508,15 @@ async function handleVideoFetch(interaction, picked, isUpdate = true) {
   const stream = await getVideoStreamUrl(picked.url);
   logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
 
-  if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
-    // Proxy embed path: create a short link Discord can unfurl into an inline player.
+  if (STREAM_BASE_URL && stream?.url) {
+    if (stream.isHls) {
+      // HLS streams go through the proxy ffmpeg — create short link directly
+      const shortUrl = createShortLink(stream.url, picked.url, picked.title);
+      logger.info(`HLS short link: ${shortUrl}`);
+      await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
+      return;
+    }
+    // Direct MP4 — probe size first so we don't proxy a huge file
     const sizeBytes = await probeContentLength(stream.url, picked.url);
     const MAX_EMBED_BYTES = 50 * 1024 * 1024;
     if (sizeBytes === null || sizeBytes <= MAX_EMBED_BYTES) {
@@ -662,17 +670,18 @@ async function handleInteraction(interaction) {
 
       // Resolve all 10 stream URLs in parallel (skip ones that fail).
       // Each successful one becomes a short link Discord can unfurl as a video.
-      // Try the fast scraper first; if that returns nothing usable, fall back to yt-dlp.
+      // Try the fast scraper first; HLS streams use the proxy, MP4 uses direct link.
       const resolved = await Promise.all(top10.map(async r => {
         try {
           const stream = await Promise.race([
             getVideoStreamUrl(r.url),
             new Promise(res => setTimeout(() => res(null), 15000)),
           ]);
-          if (STREAM_BASE_URL && stream?.url && !stream.isHls) {
+          if (STREAM_BASE_URL && stream?.url) {
+            // Both HLS and direct MP4 can be proxied via short link
             return { item: r, link: createShortLink(stream.url, r.url, r.title) };
           }
-          // Scraper got HLS or nothing — fall back to yt-dlp with a hard timeout
+          // No stream URL from scraper — fall back to yt-dlp
           if (STREAM_BASE_URL) {
             const directUrl = await Promise.race([
               getDirectMp4Url(r.url, stream?.cookies || ''),
@@ -686,7 +695,7 @@ async function handleInteraction(interaction) {
         } catch (err) {
           logger.warn(`search20 fetch failed for ${r.url}: ${err.message}`);
         }
-        // Fallback — page URL won't embed for these sites but at least it's clickable
+        // Fallback — send the page URL so at least it's clickable
         return { item: r, link: r.url };
       }));
 
@@ -695,7 +704,11 @@ async function handleInteraction(interaction) {
         const src = item.source ? `\`${SOURCE_LABELS[item.source] || item.source}\` ` : '';
         const dur = item.duration ? ` \`${item.duration}\`` : '';
         try {
-          await interaction.followUp({ content: `${src}**${item.title}**${dur}\n${link}` });
+          const embedS = new EmbedBuilder()
+            .setColor(0x5865F2)
+            .setDescription(`${src}**${item.title}**${dur}\n${link}`);
+          if (item.thumbnail) embedS.setImage(item.thumbnail);
+          await interaction.followUp({ embeds: [embedS] });
         } catch (err) {
           logger.warn(`followUp failed for ${item.url}: ${err.message}`);
         }

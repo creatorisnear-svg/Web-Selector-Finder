@@ -61,10 +61,13 @@ async function searchPornhub(query) {
             duration = v.duration;
           }
         }
+        const thumb = v.defaultThumb?.src || (Array.isArray(v.thumbs) && v.thumbs[0]?.src) || null;
+        const thumbnail = thumb && !thumb.startsWith('data:') ? thumb : null;
         return {
           title: v.title.length > 80 ? v.title.slice(0, 77) + '...' : v.title,
           url: v.url,
           duration,
+          thumbnail,
         };
       });
     }
@@ -106,7 +109,10 @@ async function searchXvideos(query, page = 0) {
       if (!title || !url) return;
       const rawDuration = $(el).find('.duration').text().trim() || $(el).find('[class*="duration"]').text().trim() || '';
       const duration = rawDuration || null;
-      results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration });
+      const thumbEl = $(el).find('img').first();
+      const rawThumb = thumbEl.attr('data-src') || thumbEl.attr('src') || null;
+      const thumbnail = rawThumb && !rawThumb.startsWith('data:') ? rawThumb : null;
+      results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration, thumbnail });
     });
     logger.info(`xvideos search returned ${results.length} results`);
     return results;
@@ -255,10 +261,15 @@ async function searchXnxx(query, page = 0) {
         }
       }
 
+      const thumbElN = $(el).find('img').first();
+      const rawThumbN = thumbElN.attr('data-src') || thumbElN.attr('src') || null;
+      const thumbnail = rawThumbN && !rawThumbN.startsWith('data:') ? rawThumbN : null;
+
       results.push({
         title: title.length > 80 ? title.slice(0, 77) + '...' : title,
         url,
         duration,
+        thumbnail,
       });
     });
 
@@ -309,10 +320,15 @@ async function searchXxbrits(query, page = 0) {
         p = p.parent();
       }
 
+      const thumbElB = $(el).find('img').first();
+      const rawThumbB = thumbElB.attr('data-src') || thumbElB.attr('src') || null;
+      const thumbnail = rawThumbB && !rawThumbB.startsWith('data:') ? rawThumbB : null;
+
       results.push({
         title: title.length > 80 ? title.slice(0, 77) + '...' : title,
         url,
         duration,
+        thumbnail,
       });
     });
 
@@ -325,10 +341,16 @@ async function searchXxbrits(query, page = 0) {
 }
 
 // ── Public search entry point ─────────────────────────────────────────────────
-// Searches xvideos, xnxx and xxbrits in parallel and interleaves the results so
-// the top of the list is varied across sites. `page` is 0-indexed.
+// Searches PornHub, xvideos, xnxx and xxbrits in parallel and interleaves the
+// results so the top of the list is varied across sites. `page` is 0-indexed.
 export async function searchVideos(_searchUrlTemplate, query, page = 0) {
-  const [xv, xn, xb] = await Promise.all([
+  // PH API only has one page of results, skip it for subsequent pages
+  const phPromise = page === 0
+    ? searchPornhub(query).catch(e => { logger.warn(`pornhub failed: ${e.message}`); return []; })
+    : Promise.resolve([]);
+
+  const [ph, xv, xn, xb] = await Promise.all([
+    phPromise,
     searchXvideos(query, page).catch(e => { logger.warn(`xvideos failed: ${e.message}`); return []; }),
     searchXnxx(query, page).catch(e => { logger.warn(`xnxx failed: ${e.message}`); return []; }),
     searchXxbrits(query, page).catch(e => { logger.warn(`xxbrits failed: ${e.message}`); return []; }),
@@ -336,7 +358,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0) {
 
   // Tag each result with its source so the UI can show where it came from
   const tag = (arr, source) => arr.map(r => ({ ...r, source }));
-  const tagged = [tag(xv, 'xvideos'), tag(xn, 'xnxx'), tag(xb, 'xxbrits')];
+  const tagged = [tag(ph, 'pornhub'), tag(xv, 'xvideos'), tag(xn, 'xnxx'), tag(xb, 'xxbrits')];
 
   // Round-robin interleave so the first page shows results from all sites
   const interleaved = [];
@@ -359,7 +381,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0) {
   const others = interleaved.filter(r => !isRelevant(r.title, words));
   const final = [...relevant, ...others];
 
-  logger.info(`Combined search "${query}": xvideos=${xv.length} xnxx=${xn.length} xxbrits=${xb.length} → ${final.length} total`);
+  logger.info(`Combined search "${query}": pornhub=${ph.length} xvideos=${xv.length} xnxx=${xn.length} xxbrits=${xb.length} → ${final.length} total`);
   return final;
 }
 
@@ -650,7 +672,6 @@ async function downloadWithYtDlp(videoPageUrl, cookies = '') {
   const args = [
     '--impersonate', 'chrome',
     '-f', 'worstvideo[height>=240]+worstaudio/worst[height>=240]/worst',
-    '--download-sections', '*0-75',
     '-o', tmpTemplate,
     '--no-playlist',
     '--merge-output-format', 'mp4',
@@ -686,7 +707,7 @@ async function downloadWithYtDlp(videoPageUrl, cookies = '') {
         ], { timeout: 10000 });
         const duration = parseFloat(probeOut.trim());
         // Cap duration at 90s to keep encode fast and clip watchable
-        const targetDuration = Math.min(duration, 90);
+        const targetDuration = Math.min(duration, 300);
         // Target 7.5MB, reserve 128kbps for audio, rest for video
         const targetTotalKbps = Math.floor((7.5 * 8 * 1024) / targetDuration);
         const audioBitrateKbps = 96;
