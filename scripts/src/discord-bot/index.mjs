@@ -13,7 +13,10 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
-  MessageFlags
+  MessageFlags,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from 'discord.js';
 import { searchVideos, getVideoStreamUrl, getDirectMp4Url, downloadVideoClip, cleanupClip } from './scraper.mjs';
 import { logger } from './logger.mjs';
@@ -26,18 +29,16 @@ if (!TOKEN || !CLIENT_ID) {
   process.exit(1);
 }
 
-// Hardcoded PornHub search URL
 const SEARCH_URL = '';
 
-// Temporary search results store: key -> { results, query, site }
+// Pending search sessions: key -> { results, query, lastSitePage, exhausted, currentPage }
 const pendingResults = new Map();
 
 // Short video link store: shortId -> { streamUrl, refUrl, title }
-// Links expire after 2 hours — long enough for Discord to cache the embed.
 const videoLinks = new Map();
 
 function createShortLink(streamUrl, refUrl, title) {
-  const id = Math.random().toString(36).slice(2, 9); // 7-char ID e.g. "k4x9bza"
+  const id = Math.random().toString(36).slice(2, 9);
   videoLinks.set(id, { streamUrl, refUrl, title });
   setTimeout(() => videoLinks.delete(id), 2 * 60 * 60 * 1000);
   return `${process.env.STREAM_BASE_URL}/v/${id}`;
@@ -56,8 +57,6 @@ function isAllowedUrl(raw) {
   try { return ALLOWED_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; }
 }
 
-// Quick HEAD probe to learn the upstream Content-Length, following redirects.
-// Returns the size in bytes, or null if it can't be determined within 5s.
 async function probeContentLength(streamUrl, refUrl) {
   const headers = {};
   if (refUrl) {
@@ -67,7 +66,6 @@ async function probeContentLength(streamUrl, refUrl) {
       headers['Origin'] = `${o.protocol}//${o.host}`;
     } catch {}
   }
-  // Some CDNs reject HEAD; use a tiny ranged GET instead so we always get Content-Range.
   headers['Range'] = 'bytes=0-0';
   try {
     const res = await Promise.race([
@@ -76,10 +74,7 @@ async function probeContentLength(streamUrl, refUrl) {
     ]);
     res.resume();
     const cr = res.headers['content-range'];
-    if (cr) {
-      const m = cr.match(/\/(\d+)$/);
-      if (m) return parseInt(m[1], 10);
-    }
+    if (cr) { const m = cr.match(/\/(\d+)$/); if (m) return parseInt(m[1], 10); }
     const cl = res.headers['content-length'];
     if (cl) return parseInt(cl, 10);
     return null;
@@ -89,8 +84,6 @@ async function probeContentLength(streamUrl, refUrl) {
   }
 }
 
-// Follows up to 5 redirects. xxbrits get_file URLs 302 to media.xxbrits.com,
-// and without following them the proxy pipes the empty redirect response to Discord.
 function fetchUpstream(raw, extra = {}, depth = 0) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(raw);
@@ -101,7 +94,6 @@ function fetchUpstream(raw, extra = {}, depth = 0) {
       if (status >= 300 && status < 400 && loc && depth < 5) {
         res.resume();
         const next = new URL(loc, raw).toString();
-        // Drop Range header on redirect target only if it's a different host (preserve where safe)
         resolve(fetchUpstream(next, extra, depth + 1));
         return;
       }
@@ -111,7 +103,6 @@ function fetchUpstream(raw, extra = {}, depth = 0) {
     req.end();
   });
 }
-
 
 async function handleStreamProxy(req, res) {
   const reqUrl = new URL(req.url, 'http://localhost');
@@ -124,9 +115,6 @@ async function handleStreamProxy(req, res) {
     return;
   }
 
-  // Discord's unfurler sends HEAD/GET with "Discordbot" UA.
-  // Serve OG-tag HTML so Discord renders an inline embed.
-  // The og:video points to /api/stream/play/video.mp4 which ALWAYS streams (never returns HTML).
   const ua = req.headers['user-agent'] || '';
   const isUnfurler = ua.includes('Discordbot') || ua.includes('Twitterbot') || ua.includes('facebookexternalhit') || req.method === 'HEAD';
   if (isUnfurler) {
@@ -162,14 +150,11 @@ async function handleStreamProxy(req, res) {
       'Cache-Control': 'no-store',
       'Transfer-Encoding': 'chunked',
     });
-
-    // Build ffmpeg headers string for HLS auth
     const ffHeaders = [
       `User-Agent: ${PROXY_HEADERS['User-Agent']}`,
       `Cookie: ${PROXY_HEADERS['Cookie']}`,
       extra['Referer'] ? `Referer: ${extra['Referer']}` : '',
     ].filter(Boolean).join('\r\n') + '\r\n';
-
     const ff = spawn('ffmpeg', [
       '-headers', ffHeaders,
       '-i', raw,
@@ -181,24 +166,18 @@ async function handleStreamProxy(req, res) {
       '-loglevel', 'error',
       'pipe:1',
     ]);
-
     ff.stdout.pipe(res);
     ff.stderr.on('data', d => logger.warn('ffmpeg stderr:', d.toString().slice(0, 200)));
-    ff.on('error', err => {
-      logger.error('ffmpeg spawn error:', err.message);
-      if (!res.writableEnded) res.end();
-    });
+    ff.on('error', err => { logger.error('ffmpeg spawn error:', err.message); if (!res.writableEnded) res.end(); });
     ff.on('close', () => { if (!res.writableEnded) res.end(); });
     req.on('close', () => ff.kill('SIGTERM'));
     return;
   }
 
-  // Direct MP4 proxy — forward range requests so seeking works
   try {
     const rangeHeader = req.headers['range'];
     const upHeaders = { ...extra };
     if (rangeHeader) upHeaders['Range'] = rangeHeader;
-
     const upRes = await fetchUpstream(raw, upHeaders);
     if (upRes.statusCode >= 400) {
       res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -220,14 +199,10 @@ async function handleStreamProxy(req, res) {
     req.on('close', () => upRes.destroy());
   } catch (err) {
     logger.error('MP4 proxy error:', err.message);
-    if (!res.headersSent) {
-      res.writeHead(502, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message }));
-    }
+    if (!res.headersSent) { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: err.message })); }
   }
 }
 
-// Always streams video — used by the og:video URL so Discord's player gets real data
 async function handleVideoStream(req, res) {
   const reqUrl = new URL(req.url, 'http://localhost');
   const raw = reqUrl.searchParams.get('url');
@@ -257,13 +232,11 @@ async function handleVideoStream(req, res) {
       'Cache-Control': 'no-store',
       'Accept-Ranges': 'none',
     });
-
     const ffHeaders = [
       `User-Agent: ${PROXY_HEADERS['User-Agent']}`,
       `Cookie: ${PROXY_HEADERS['Cookie']}`,
       extra['Referer'] ? `Referer: ${extra['Referer']}` : '',
     ].filter(Boolean).join('\r\n') + '\r\n';
-
     const ff = spawn('ffmpeg', [
       '-headers', ffHeaders,
       '-i', raw,
@@ -275,7 +248,6 @@ async function handleVideoStream(req, res) {
       '-loglevel', 'error',
       'pipe:1',
     ]);
-
     ff.stdout.pipe(res);
     ff.stderr.on('data', d => logger.warn('ffmpeg stderr:', d.toString().slice(0, 200)));
     ff.on('error', err => { logger.error('ffmpeg error:', err.message); if (!res.writableEnded) res.end(); });
@@ -284,17 +256,12 @@ async function handleVideoStream(req, res) {
     return;
   }
 
-  // Direct MP4 — support byte-range requests so Discord's player can seek
   try {
     const rangeHeader = req.headers['range'];
     const upHeaders = { ...extra };
     if (rangeHeader) upHeaders['Range'] = rangeHeader;
-
     const upRes = await fetchUpstream(raw, upHeaders);
-    if (upRes.statusCode >= 400) {
-      res.writeHead(502); res.end(); upRes.resume(); return;
-    }
-
+    if (upRes.statusCode >= 400) { res.writeHead(502); res.end(); upRes.resume(); return; }
     const statusCode = rangeHeader && upRes.statusCode === 206 ? 206 : 200;
     const headers = {
       'Content-Type': upRes.headers['content-type'] || 'video/mp4',
@@ -304,7 +271,6 @@ async function handleVideoStream(req, res) {
     };
     if (upRes.headers['content-length']) headers['Content-Length'] = upRes.headers['content-length'];
     if (upRes.headers['content-range']) headers['Content-Range'] = upRes.headers['content-range'];
-
     res.writeHead(statusCode, headers);
     upRes.pipe(res);
     req.on('close', () => upRes.destroy());
@@ -314,31 +280,19 @@ async function handleVideoStream(req, res) {
   }
 }
 
-// ── HTTP server: health check + stream proxy ──────────────────────────────────
+// ── HTTP server ───────────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || '5000', 10);
 const healthServer = http.createServer(async (req, res) => {
   const path = (req.url || '/').split('?')[0];
 
-  if (path === '/api/stream/video.mp4') {
-    await handleStreamProxy(req, res);
-    return;
-  }
+  if (path === '/api/stream/video.mp4') { await handleStreamProxy(req, res); return; }
+  if (path === '/api/stream/play/video.mp4') { await handleVideoStream(req, res); return; }
 
-  if (path === '/api/stream/play/video.mp4') {
-    await handleVideoStream(req, res);
-    return;
-  }
-
-  // Short video links: /v/:id
   const shortMatch = path.match(/^\/v\/([a-z0-9]+)$/i);
   if (shortMatch) {
     const id = shortMatch[1];
     const link = videoLinks.get(id);
-    if (!link) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('Link expired or not found');
-      return;
-    }
+    if (!link) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Link expired or not found'); return; }
     const { streamUrl, refUrl, title } = link;
     const playUrl = `${process.env.STREAM_BASE_URL}/api/stream/play/video.mp4?url=${encodeURIComponent(streamUrl)}&ref=${encodeURIComponent(refUrl || '')}`;
     const ua = req.headers['user-agent'] || '';
@@ -357,14 +311,12 @@ const healthServer = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(html);
     } else {
-      // Regular browser — redirect straight to the stream
       res.writeHead(302, { 'Location': playUrl });
       res.end();
     }
     return;
   }
 
-  // Health check — GET / or /health — UptimeRobot pings this
   if (path === '/' || path === '/health') {
     const payload = JSON.stringify({ status: 'ok', uptime: process.uptime() | 0 });
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -380,19 +332,11 @@ healthServer.listen(PORT, '0.0.0.0', () => {
 });
 
 // ── Slash commands ────────────────────────────────────────────────────────────
+// /search has NO options — it opens a modal instead
 const commands = [
   new SlashCommandBuilder()
     .setName('search')
-    .setDescription('Search Xvideos, XNXX and XXBrits combined')
-    .addStringOption(opt =>
-      opt.setName('query').setDescription('What to search for').setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName('search20')
-    .setDescription('Search and post 10 related videos directly into the channel')
-    .addStringOption(opt =>
-      opt.setName('query').setDescription('What to search for').setRequired(true)
-    ),
+    .setDescription('Search for videos — opens a search box'),
 ].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -413,7 +357,6 @@ client.once('clientReady', () => {
   logger.info(`Bot is online as ${client.user.tag}`);
 });
 
-// Wrap the whole handler so one bad interaction never crashes the bot
 client.on('interactionCreate', async interaction => {
   try {
     await handleInteraction(interaction);
@@ -421,11 +364,8 @@ client.on('interactionCreate', async interaction => {
     logger.error('Interaction error:', err.message, err.stack);
     try {
       const msg = { content: '❌ Something went wrong. Please try again.', flags: MessageFlags.Ephemeral };
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(msg);
-      } else {
-        await interaction.reply(msg);
-      }
+      if (interaction.deferred || interaction.replied) await interaction.editReply(msg);
+      else await interaction.reply(msg);
     } catch (_) {}
   }
 });
@@ -438,31 +378,30 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
+// ── Constants ─────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 5;
-
 const SOURCE_LABELS = { pornhub: 'PH', xvideos: 'XV', xnxx: 'XNXX', xxbrits: 'XXBrits' };
+const YTDLP_TIMEOUT_MS = 12000;
 
+// ── Build ephemeral results page ──────────────────────────────────────────────
 function buildResultsPage(results, page, key, userId, exhausted = false) {
   const loadedPages = Math.ceil(results.length / PAGE_SIZE);
   const start = page * PAGE_SIZE;
   const pageItems = results.slice(start, start + PAGE_SIZE);
 
   const hasMoreLoaded = page < loadedPages - 1;
-  const canFetchMore = !exhausted;
-  const nextEnabled = hasMoreLoaded || canFetchMore;
+  const nextEnabled = hasMoreLoaded || !exhausted;
   const totalLabel = exhausted ? `${loadedPages}` : `${loadedPages}+`;
 
-  // Header embed
   const headerEmbed = new EmbedBuilder()
     .setTitle(`🔎 Search Results — Page ${page + 1} of ${totalLabel}`)
     .setColor(0x5865F2)
     .setFooter({
       text: exhausted
         ? `${results.length} videos from PH + Xvideos + XNXX + XXBrits • End of results`
-        : `${results.length}+ videos from PH + Xvideos + XNXX + XXBrits • More load as you browse`
+        : `${results.length}+ videos from PH + Xvideos + XNXX + XXBrits • More load as you browse`,
     });
 
-  // One embed per result with thumbnail
   const resultEmbeds = pageItems.map((r, i) => {
     const num = start + i + 1;
     const dur = r.duration ? ` \`${r.duration}\`` : '';
@@ -497,95 +436,44 @@ function buildResultsPage(results, page, key, userId, exhausted = false) {
     new ButtonBuilder()
       .setCustomId(`ref:${userId}:${key}`)
       .setLabel('🔄 Refresh')
-      .setStyle(ButtonStyle.Success)
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`newsearch:${userId}`)
+      .setLabel('🔍 New Search')
+      .setStyle(ButtonStyle.Secondary),
   );
 
-  return { embeds: [headerEmbed, ...resultEmbeds], components: [selectRow, navRow] };
+  return {
+    embeds: [headerEmbed, ...resultEmbeds],
+    components: [selectRow, navRow],
+    flags: MessageFlags.Ephemeral,
+  };
 }
 
-const YTDLP_TIMEOUT_MS = 12000;
-
-async function handleVideoFetch(interaction, picked, isUpdate = true) {
-  const fetchPayload = { content: `⏳ Fetching **${picked.title}**...`, embeds: [], components: [] };
-  if (isUpdate) await interaction.update(fetchPayload);
-  else await interaction.editReply(fetchPayload);
-
-  const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
-
-  // Step 1: HTML scraper — fast (1-2s), extracts direct MP4/HLS URLs from the page.
-  const stream = await getVideoStreamUrl(picked.url);
-  logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
-
-  if (STREAM_BASE_URL && stream?.url) {
-    if (stream.isHls) {
-      // HLS streams go through the proxy ffmpeg — create short link directly
-      const shortUrl = createShortLink(stream.url, picked.url, picked.title);
-      logger.info(`HLS short link: ${shortUrl}`);
-      await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
-      return;
-    }
-    // Direct MP4 — probe size first so we don't proxy a huge file
-    const sizeBytes = await probeContentLength(stream.url, picked.url);
-    const MAX_EMBED_BYTES = 50 * 1024 * 1024;
-    if (sizeBytes === null || sizeBytes <= MAX_EMBED_BYTES) {
-      const shortUrl = createShortLink(stream.url, picked.url, picked.title);
-      logger.info(`Fast path — short link: ${shortUrl} (size=${sizeBytes ?? 'unknown'})`);
-      await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
-      return;
-    }
-    logger.warn(`Stream too large to embed (${sizeBytes} bytes) — falling through`);
-  }
-
-  // Step 2: Try yt-dlp URL extraction (works regardless of STREAM_BASE_URL).
-  // If STREAM_BASE_URL is set, proxy it via short link. Otherwise send the CDN URL
-  // directly — Discord can embed direct .mp4 CDN links without a proxy.
-  logger.info('Trying yt-dlp URL extraction (12s timeout)...');
-  const directUrl = await Promise.race([
-    getDirectMp4Url(picked.url, stream?.cookies || ''),
-    new Promise(r => setTimeout(() => r(null), YTDLP_TIMEOUT_MS)),
-  ]);
-  if (directUrl) {
-    if (STREAM_BASE_URL) {
-      const shortUrl = createShortLink(directUrl, picked.url, picked.title);
-      logger.info(`yt-dlp short link: ${shortUrl}`);
-      await interaction.editReply({ content: shortUrl, embeds: [], components: [] });
-    } else {
-      logger.info(`yt-dlp direct URL (no proxy): ${directUrl.slice(0, 80)}`);
-      await interaction.editReply({ content: `🎬 **${picked.title}**\n${directUrl}`, embeds: [], components: [] });
-    }
+// ── Send the search panel (ephemeral) ─────────────────────────────────────────
+// Used both for the first render and to restore after a video is sent.
+// `interaction` must already be deferred+ephemeral OR replied.
+async function sendSearchPanel(interaction, key, page) {
+  const stored = pendingResults.get(key);
+  if (!stored) {
+    await interaction.editReply({ content: '❌ Search expired. Run `/search` again.', embeds: [], components: [], flags: MessageFlags.Ephemeral });
     return;
   }
-  logger.warn('yt-dlp timed out or returned nothing — falling back to download');
-
-  // Step 3: Download and upload directly to Discord as a file attachment.
-  logger.info('Downloading clip for upload...');
-  const filePath = await downloadVideoClip(stream?.url || '', stream?.cookies || '', picked.url);
-
-  if (filePath) {
-    logger.info(`Uploading file to Discord: ${filePath}`);
-    const attachment = new AttachmentBuilder(filePath, { name: 'video.mp4' });
-    await interaction.editReply({ content: `🎬 **${picked.title}**`, embeds: [], components: [], files: [attachment] });
-    await cleanupClip(filePath);
-    return;
-  }
-
-  // Step 4: Last resort — send the best available URL.
-  // Prefer the direct stream URL over the page URL; Discord may be able to embed it.
-  const bestUrl = (stream?.url && !stream.isHls) ? stream.url : picked.url;
-  logger.warn(`All methods failed for: ${picked.url} — sending best URL: ${bestUrl.slice(0, 80)}`);
-  await interaction.editReply({
-    content: `🎬 **${picked.title}**\n${bestUrl}\n\n> ⚠️ Couldn't download this video. Click the link to watch.`,
-    embeds: [],
-    components: []
-  });
+  stored.currentPage = page;
+  const payload = buildResultsPage(stored.results, page, key, interaction.user.id, stored.exhausted);
+  await interaction.editReply(payload);
 }
 
-async function runSearch(query, sitePage = 0) {
-  const results = await searchVideos(SEARCH_URL, query, sitePage);
-  return results || [];
+// ── Run a search and build the key ────────────────────────────────────────────
+async function startSearch(query, userId) {
+  const results = dedupeByUrl(await searchVideos(SEARCH_URL, query, 0));
+  const key = `${userId}-${Date.now()}`;
+  pendingResults.set(key, { results, query, lastSitePage: 0, exhausted: false, currentPage: 0 });
+  setTimeout(() => pendingResults.delete(key), 30 * 60 * 1000);
+  return key;
 }
 
-// Dedupe by URL while preserving order
+// ── Dedupe helpers ────────────────────────────────────────────────────────────
 function dedupeByUrl(items) {
   const seen = new Set();
   const out = [];
@@ -597,232 +485,238 @@ function dedupeByUrl(items) {
   return out;
 }
 
+// ── Video fetch — posts publicly, then restores ephemeral panel ───────────────
+async function handleVideoFetch(interaction, key, picked, restorePage) {
+  // Acknowledge the button click ephemerally — shows "⏳ fetching…" only to the user
+  await interaction.update({
+    content: `⏳ Fetching **${picked.title}**…`,
+    embeds: [],
+    components: [],
+    flags: MessageFlags.Ephemeral,
+  });
+
+  const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
+  let sent = false;
+
+  // Step 1: HTML scraper
+  const stream = await getVideoStreamUrl(picked.url);
+  logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
+
+  if (STREAM_BASE_URL && stream?.url) {
+    let shortUrl;
+    if (stream.isHls) {
+      shortUrl = createShortLink(stream.url, picked.url, picked.title);
+      logger.info(`HLS short link: ${shortUrl}`);
+    } else {
+      const sizeBytes = await probeContentLength(stream.url, picked.url);
+      const MAX_EMBED_BYTES = 50 * 1024 * 1024;
+      if (sizeBytes === null || sizeBytes <= MAX_EMBED_BYTES) {
+        shortUrl = createShortLink(stream.url, picked.url, picked.title);
+        logger.info(`Fast path — short link: ${shortUrl} (size=${sizeBytes ?? 'unknown'})`);
+      } else {
+        logger.warn(`Stream too large to embed (${sizeBytes} bytes) — falling through`);
+      }
+    }
+    if (shortUrl) {
+      await interaction.followUp({ content: shortUrl });
+      sent = true;
+    }
+  }
+
+  // Step 2: yt-dlp URL extraction
+  if (!sent) {
+    logger.info('Trying yt-dlp URL extraction...');
+    const directUrl = await Promise.race([
+      getDirectMp4Url(picked.url, stream?.cookies || ''),
+      new Promise(r => setTimeout(() => r(null), YTDLP_TIMEOUT_MS)),
+    ]);
+    if (directUrl) {
+      if (STREAM_BASE_URL) {
+        const shortUrl = createShortLink(directUrl, picked.url, picked.title);
+        await interaction.followUp({ content: shortUrl });
+      } else {
+        await interaction.followUp({ content: `🎬 **${picked.title}**\n${directUrl}` });
+      }
+      sent = true;
+    }
+  }
+
+  // Step 3: Download and attach
+  if (!sent) {
+    logger.info('Downloading clip for upload...');
+    const filePath = await downloadVideoClip(stream?.url || '', stream?.cookies || '', picked.url);
+    if (filePath) {
+      const attachment = new AttachmentBuilder(filePath, { name: 'video.mp4' });
+      await interaction.followUp({ content: `🎬 **${picked.title}**`, files: [attachment] });
+      await cleanupClip(filePath);
+      sent = true;
+    }
+  }
+
+  // Step 4: Last resort — page link
+  if (!sent) {
+    const bestUrl = (stream?.url && !stream.isHls) ? stream.url : picked.url;
+    await interaction.followUp({
+      content: `🎬 **${picked.title}**\n${bestUrl}\n\n> ⚠️ Couldn't embed this video. Click the link to watch.`,
+    });
+  }
+
+  // Restore the search panel at the same page — ephemeral editReply
+  await sendSearchPanel(interaction, key, restorePage);
+}
+
+// ── Main interaction handler ──────────────────────────────────────────────────
 async function handleInteraction(interaction) {
-  if (Date.now() - interaction.createdTimestamp > 2500) {
-    logger.warn(`Dropping stale interaction (${Date.now() - interaction.createdTimestamp}ms old)`);
+  // ── /search slash command — show modal ──────────────────────────────────────
+  if (interaction.isChatInputCommand() && interaction.commandName === 'search') {
+    logger.info(`/search from ${interaction.user.tag}`);
+    const modal = new ModalBuilder()
+      .setCustomId(`searchmodal:${interaction.user.id}`)
+      .setTitle('Video Search');
+    const input = new TextInputBuilder()
+      .setCustomId('query')
+      .setLabel('What are you searching for?')
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder('e.g. step mom kitchen')
+      .setRequired(true)
+      .setMaxLength(100);
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+    await interaction.showModal(modal);
     return;
   }
 
-  // ── Slash commands ──────────────────────────────────────────────────────────
-  if (interaction.isChatInputCommand()) {
-    const { commandName, guildId } = interaction;
-    logger.info(`Command /${commandName} from user ${interaction.user.tag} (guild ${guildId})`);
+  // ── Modal submit ────────────────────────────────────────────────────────────
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('searchmodal:')) {
+    const query = interaction.fields.getTextInputValue('query').trim();
+    if (!query) { await interaction.reply({ content: '❌ Please enter a search term.', flags: MessageFlags.Ephemeral }); return; }
 
-    if (commandName === 'search') {
-      const query = interaction.options.getString('query');
-      logger.info(`Search query: "${query}"`);
-      try {
-        await interaction.deferReply();
-      } catch (err) {
-        if (err.code === 10062 || err.code === 40060) {
-          logger.warn(`Skipping duplicate/stale interaction (code ${err.code})`);
-          return;
-        }
-        throw err;
-      }
+    logger.info(`Modal search: "${query}" from ${interaction.user.tag}`);
 
-      let firstBatch;
-      try {
-        firstBatch = await runSearch(query, 0);
-      } catch (err) {
-        logger.error('Scrape error:', err.message);
-        await interaction.editReply(`❌ Could not fetch results: ${err.message}`);
-        return;
-      }
+    // Defer ephemerally — only this user sees the loading indicator
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-      if (!firstBatch || firstBatch.length === 0) {
-        logger.warn(`No results found for query: "${query}"`);
-        await interaction.editReply(`❌ No results found for **${query}**. Try a different search term.`);
-        return;
-      }
-
-      const results = dedupeByUrl(firstBatch);
-      const key = `${interaction.user.id}-${Date.now()}`;
-      pendingResults.set(key, { results, query, lastSitePage: 0, exhausted: false });
-      setTimeout(() => pendingResults.delete(key), 5 * 60 * 1000);
-
-      await interaction.editReply(buildResultsPage(results, 0, key, interaction.user.id, false));
+    let key;
+    try {
+      key = await startSearch(query, interaction.user.id);
+    } catch (err) {
+      logger.error('Search error:', err.message);
+      await interaction.editReply({ content: `❌ Search failed: ${err.message}`, flags: MessageFlags.Ephemeral });
+      return;
     }
 
-    if (commandName === 'search20') {
-      const query = interaction.options.getString('query');
-      logger.info(`/search20 query: "${query}"`);
-      try {
-        await interaction.deferReply();
-      } catch (err) {
-        if (err.code === 10062 || err.code === 40060) {
-          logger.warn(`Skipping duplicate/stale interaction (code ${err.code})`);
-          return;
-        }
-        throw err;
-      }
-
-      let batch;
-      try {
-        batch = await runSearch(query, 0);
-      } catch (err) {
-        logger.error('Scrape error:', err.message);
-        await interaction.editReply(`❌ Could not fetch results: ${err.message}`);
-        return;
-      }
-
-      const top10 = dedupeByUrl(batch || []).slice(0, 10);
-      if (top10.length === 0) {
-        await interaction.editReply(`❌ No results found for **${query}**.`);
-        return;
-      }
-
-      await interaction.editReply(`🔎 Top ${top10.length} results for **${query}** — fetching playable embeds…`);
-
-      const STREAM_BASE_URL = process.env.STREAM_BASE_URL;
-
-      // Resolve all 10 stream URLs in parallel (skip ones that fail).
-      // Each successful one becomes a short link Discord can unfurl as a video.
-      // Try the fast scraper first; HLS streams use the proxy, MP4 uses direct link.
-      const resolved = await Promise.all(top10.map(async r => {
-        try {
-          const stream = await Promise.race([
-            getVideoStreamUrl(r.url),
-            new Promise(res => setTimeout(() => res(null), 15000)),
-          ]);
-          if (STREAM_BASE_URL && stream?.url) {
-            // Both HLS and direct MP4 can be proxied via short link
-            return { item: r, link: createShortLink(stream.url, r.url, r.title) };
-          }
-          // No stream URL from scraper — fall back to yt-dlp
-          if (STREAM_BASE_URL) {
-            const directUrl = await Promise.race([
-              getDirectMp4Url(r.url, stream?.cookies || ''),
-              new Promise(res => setTimeout(() => res(null), 15000)),
-            ]);
-            if (directUrl) {
-              return { item: r, link: createShortLink(directUrl, r.url, r.title) };
-            }
-          }
-          logger.warn(`search20 no playable stream for ${r.url}`);
-        } catch (err) {
-          logger.warn(`search20 fetch failed for ${r.url}: ${err.message}`);
-        }
-        // Fallback — send the page URL so at least it's clickable
-        return { item: r, link: r.url };
-      }));
-
-      // Post each as its own message so Discord renders one embed per video
-      for (const { item, link } of resolved) {
-        const src = item.source ? `\`${SOURCE_LABELS[item.source] || item.source}\` ` : '';
-        const dur = item.duration ? ` \`${item.duration}\`` : '';
-        try {
-          const embedS = new EmbedBuilder()
-            .setColor(0x5865F2)
-            .setDescription(`${src}**${item.title}**${dur}\n${link}`);
-          if (item.thumbnail) embedS.setImage(item.thumbnail);
-          await interaction.followUp({ embeds: [embedS] });
-        } catch (err) {
-          logger.warn(`followUp failed for ${item.url}: ${err.message}`);
-        }
-      }
+    const stored = pendingResults.get(key);
+    if (!stored || stored.results.length === 0) {
+      await interaction.editReply({ content: `❌ No results found for **${query}**. Try a different search term.`, flags: MessageFlags.Ephemeral });
+      return;
     }
+
+    await sendSearchPanel(interaction, key, 0);
+    return;
   }
 
   // ── Buttons ─────────────────────────────────────────────────────────────────
   if (interaction.isButton()) {
     const parts = interaction.customId.split(':');
-    const [type, userId, key] = parts;
+    const [type, userId] = parts;
+
+    // New Search button — opens modal again
+    if (type === 'newsearch') {
+      if (interaction.user.id !== userId) {
+        await interaction.reply({ content: '❌ This is not your search panel.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const modal = new ModalBuilder()
+        .setCustomId(`searchmodal:${interaction.user.id}`)
+        .setTitle('Video Search');
+      const input = new TextInputBuilder()
+        .setCustomId('query')
+        .setLabel('What are you searching for?')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('e.g. step mom kitchen')
+        .setRequired(true)
+        .setMaxLength(100);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
+      return;
+    }
 
     if (!['sel', 'nav', 'ref'].includes(type)) return;
 
     if (interaction.user.id !== userId) {
-      await interaction.reply({
-        content: '❌ Only the person who ran `/search` can use these buttons.',
-        flags: MessageFlags.Ephemeral
-      });
+      await interaction.reply({ content: '❌ This is not your search panel.', flags: MessageFlags.Ephemeral });
       return;
     }
 
+    const key = parts[2];
     const stored = pendingResults.get(key);
+
     if (!stored) {
-      await interaction.update({ content: '❌ This search has expired. Run `/search` again.', embeds: [], components: [] });
+      await interaction.update({ content: '❌ Search expired. Run `/search` again.', embeds: [], components: [], flags: MessageFlags.Ephemeral });
       return;
     }
 
+    // ── Select a video ────────────────────────────────────────────────────────
+    if (type === 'sel') {
+      const index = parseInt(parts[3], 10);
+      const picked = stored.results[index];
+      const restorePage = stored.currentPage || 0;
+      logger.info(`User ${interaction.user.tag} picked: "${picked.title}" — ${picked.url}`);
+      await handleVideoFetch(interaction, key, picked, restorePage);
+      return;
+    }
+
+    // ── Navigate pages ────────────────────────────────────────────────────────
     if (type === 'nav') {
       const page = parseInt(parts[3], 10);
-
-      // Fetch more site pages until we have enough results to render this page,
-      // or until the source sites stop returning anything.
       const needed = (page + 1) * PAGE_SIZE;
+
+      // Load more from source sites if needed
       while (stored.results.length < needed && !stored.exhausted) {
-        // Defer once on the first fetch so we don't time out the interaction
         if (!interaction.deferred && !interaction.replied) {
           try { await interaction.deferUpdate(); } catch {}
         }
         const nextPage = stored.lastSitePage + 1;
-        logger.info(`Loading more results for "${stored.query}" — site page ${nextPage}`);
+        logger.info(`Loading more for "${stored.query}" — site page ${nextPage}`);
         let more = [];
-        try {
-          more = await runSearch(stored.query, nextPage);
-        } catch (err) {
-          logger.error(`Pagination fetch failed: ${err.message}`);
-          break;
-        }
+        try { more = await searchVideos(SEARCH_URL, stored.query, nextPage); } catch (err) { logger.error(`Pagination failed: ${err.message}`); break; }
         stored.lastSitePage = nextPage;
         const before = stored.results.length;
         stored.results = dedupeByUrl([...stored.results, ...more]);
         const added = stored.results.length - before;
-        logger.info(`Loaded ${more.length} new (${added} after dedupe). Total: ${stored.results.length}`);
-        // If the sites returned nothing new, we're done.
-        if (added === 0) {
-          stored.exhausted = true;
-          break;
-        }
+        logger.info(`Loaded ${more.length} (${added} after dedupe). Total: ${stored.results.length}`);
+        if (added === 0) { stored.exhausted = true; break; }
       }
 
-      const { results, exhausted } = stored;
-      // Clamp page if we ran out of results before reaching it
-      const maxPage = Math.max(0, Math.ceil(results.length / PAGE_SIZE) - 1);
+      const maxPage = Math.max(0, Math.ceil(stored.results.length / PAGE_SIZE) - 1);
       const finalPage = Math.min(page, maxPage);
-      const payload = buildResultsPage(results, finalPage, key, userId, exhausted);
 
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(payload);
-      } else {
-        await interaction.update(payload);
+      if (!interaction.deferred && !interaction.replied) {
+        await interaction.deferUpdate();
       }
+      await sendSearchPanel(interaction, key, finalPage);
       return;
     }
 
-    const { results, query } = stored;
-
-    if (type === 'sel') {
-      const index = parseInt(parts[3], 10);
-      const picked = results[index];
-      pendingResults.delete(key);
-      logger.info(`User ${interaction.user.tag} picked: "${picked.title}" — ${picked.url}`);
-      await handleVideoFetch(interaction, picked, true);
-      return;
-    }
-
+    // ── Refresh ───────────────────────────────────────────────────────────────
     if (type === 'ref') {
-      // deferUpdate holds the interaction open (up to 15 min) so editReply works after async work.
       await interaction.deferUpdate();
       let fresh;
       try {
-        fresh = await runSearch(query, 0);
+        fresh = dedupeByUrl(await searchVideos(SEARCH_URL, stored.query, 0));
       } catch (err) {
-        logger.error('Refresh scrape error:', err.message);
-        await interaction.editReply({ content: '❌ Refresh failed. Try `/search` again.', embeds: [], components: [] });
+        logger.error('Refresh failed:', err.message);
+        await interaction.editReply({ content: '❌ Refresh failed. Try `/search` again.', embeds: [], components: [], flags: MessageFlags.Ephemeral });
         return;
       }
       if (!fresh || fresh.length === 0) {
-        await interaction.editReply({ content: `❌ No results on refresh for **${query}**.`, embeds: [], components: [] });
+        await interaction.editReply({ content: `❌ No results on refresh for **${stored.query}**.`, embeds: [], components: [], flags: MessageFlags.Ephemeral });
         return;
       }
-      const deduped = dedupeByUrl(fresh);
       const newKey = `${userId}-${Date.now()}`;
       pendingResults.delete(key);
-      pendingResults.set(newKey, { results: deduped, query, lastSitePage: 0, exhausted: false });
-      setTimeout(() => pendingResults.delete(newKey), 5 * 60 * 1000);
-      await interaction.editReply(buildResultsPage(deduped, 0, newKey, userId, false));
+      pendingResults.set(newKey, { results: fresh, query: stored.query, lastSitePage: 0, exhausted: false, currentPage: 0 });
+      setTimeout(() => pendingResults.delete(newKey), 30 * 60 * 1000);
+      await sendSearchPanel(interaction, newKey, 0);
     }
   }
 }
