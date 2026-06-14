@@ -48,10 +48,12 @@ function extractThumbnail(imgEl, $, baseUrl) {
 // ── PornHub WebMasters API search ─────────────────────────────────────────────
 // Uses PH's official API endpoint — returns clean JSON, no bot detection issues.
 // Fetches 30 results so the relevance filter has enough to pick 10 good ones from.
-async function searchPornhub(query) {
+async function searchPornhub(query, page = 0) {
   // 1. Try PornHub WebMasters JSON API (fast and clean when not IP-blocked)
+  // PH API uses 1-indexed pages, so page 0 → page=1, page 1 → page=2, etc.
   try {
-    const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=${encodeURIComponent(query)}&page=1&per_page=30&ordering=mostviewed&period=alltime`;
+    const phPage = page + 1;
+    const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=${encodeURIComponent(query)}&page=${phPage}&per_page=30&ordering=mostviewed&period=alltime`;
     logger.info(`PH API: ${apiUrl}`);
     const res = await axios.get(apiUrl, {
       headers: { 'Accept': 'application/json', 'User-Agent': HEADERS['User-Agent'] },
@@ -422,10 +424,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     }
   }
 
-  // PH API only has one page of results, skip it for subsequent pages
-  const phPromise = page === 0
-    ? searchPornhub(query).catch(e => { logger.warn(`pornhub failed: ${e.message}`); return []; })
-    : Promise.resolve([]);
+  const phPromise = searchPornhub(query, page).catch(e => { logger.warn(`pornhub failed: ${e.message}`); return []; });
 
   const [ph, xv, xn, xb, fp] = await Promise.all([
     phPromise,
