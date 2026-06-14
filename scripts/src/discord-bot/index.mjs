@@ -612,11 +612,10 @@ async function handleVideoFetch(interaction, key, picked, restorePage) {
   const stream = await getVideoStreamUrl(picked.url);
   logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
 
-  // Build a direct /api/stream/play/video.mp4 URL — Discord auto-embeds URLs ending in .mp4
-  // This is more reliable than OG-tag short links (/v/:id) which Discord sometimes ignores.
+  // Build a short /v/:id proxy link — clean URL, Discord embed bot unfurls OG tags into inline player.
   function buildPlayUrl(cdnUrl) {
     if (!STREAM_BASE_URL) return null;
-    return `${STREAM_BASE_URL}/api/stream/play/video.mp4?url=${encodeURIComponent(cdnUrl)}&ref=${encodeURIComponent(picked.url)}`;
+    return createShortLink(cdnUrl, picked.url, picked.title, picked.thumbnail);
   }
 
   if (stream?.url) {

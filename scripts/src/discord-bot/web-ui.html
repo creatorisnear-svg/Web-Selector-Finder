@@ -263,10 +263,28 @@
   }
   .modal-bottom a:hover { text-decoration: underline; }
 
-  @media (max-width: 520px) {
-    .hero { margin-top: 1.5rem; }
-    .grid { grid-template-columns: repeat(2, 1fr); gap: .5rem; }
-    .modal-title { font-size: .8rem; }
+  @media (max-width: 600px) {
+    .hero { margin-top: 1.25rem; }
+    .hero p { font-size: .83rem; margin-bottom: 1rem; }
+    .search-row { flex-direction: column; gap: .4rem; }
+    .search-row input { font-size: .95rem; padding: .65rem .9rem; }
+    .search-row button { padding: .65rem 1rem; font-size: .95rem; }
+    .grid { grid-template-columns: repeat(2, 1fr); gap: .5rem; margin: 1.25rem auto 2rem; }
+    .card-title { font-size: .78rem; }
+    .modal-overlay { padding: 0; align-items: flex-end; }
+    .modal {
+      border-radius: 16px 16px 0 0;
+      max-height: 95dvh;
+      overflow-y: auto;
+    }
+    .modal-top { padding: .7rem .85rem; }
+    .modal-title { font-size: .82rem; }
+    .modal-video-wrap { aspect-ratio: 16 / 10; }
+    .modal-bottom { padding: .55rem .85rem; }
+  }
+  @media (max-width: 380px) {
+    .grid { grid-template-columns: 1fr 1fr; gap: .35rem; }
+    .card-title { font-size: .75rem; }
   }
 </style>
 </head>

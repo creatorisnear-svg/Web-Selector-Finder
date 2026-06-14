@@ -467,7 +467,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
         const mediaRes = await axios.get(mp4ApiDef.videoUrl, { headers: mediaHeaders, timeout: 10000 });
         const mediaDefs = Array.isArray(mediaRes.data) ? mediaRes.data : [];
         if (mediaDefs.length > 0) {
-          const qualityOrder = ['240', '480', '360', '720', '1080'];
+          const qualityOrder = ['1080', '720', '480', '360', '240'];
           mediaDefs.sort((a, b) => {
             const ai = qualityOrder.findIndex(q => String(a.height || a.quality || '').includes(q));
             const bi = qualityOrder.findIndex(q => String(b.height || b.quality || '').includes(q));
@@ -481,7 +481,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
       }
 
       const hlsDefs = defs.filter(d => d.format === 'hls' && d.videoUrl);
-      const qualityOrder = ['480', '240', '360', '720', '1080'];
+      const qualityOrder = ['1080', '720', '480', '360', '240'];
       // Prefer iv-h CDN over ev-h (ev-h CDN blocks some server IPs)
       const cdnPrefer = (url) => url.includes('ev-h.') ? 1 : 0;
       hlsDefs.sort((a, b) => {
