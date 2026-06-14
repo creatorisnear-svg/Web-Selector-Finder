@@ -357,9 +357,9 @@ async function searchXxbrits(query, page = 0) {
 async function searchFpoxxx(query, page = 0) {
   const pageNum = page + 1;
   const searchUrl = pageNum === 1
-    ? `https://www.fpoxxx.com/?s=${encodeURIComponent(query)}`
-    : `https://www.fpoxxx.com/page/${pageNum}/?s=${encodeURIComponent(query)}`;
-  logger.info(`fpoxxx search: ${searchUrl}`);
+    ? `https://www.fpo.xxx/?s=${encodeURIComponent(query)}`
+    : `https://www.fpo.xxx/page/${pageNum}/?s=${encodeURIComponent(query)}`;
+  logger.info(`fpo.xxx search: ${searchUrl}`);
   try {
     const { data } = await axios.get(searchUrl, {
       headers: { 'User-Agent': HEADERS['User-Agent'], 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' },
@@ -374,8 +374,8 @@ async function searchFpoxxx(query, page = 0) {
       const anchor = $(el).find('a[href]').first();
       const rawUrl = anchor.attr('href') || '';
       if (!rawUrl || seen.has(rawUrl)) return;
-      if (!rawUrl.includes('fpoxxx.com') && !rawUrl.startsWith('/')) return;
-      const url = rawUrl.startsWith('http') ? rawUrl : `https://www.fpoxxx.com${rawUrl}`;
+      if (!rawUrl.includes('fpo.xxx') && !rawUrl.startsWith('/')) return;
+      const url = rawUrl.startsWith('http') ? rawUrl : `https://www.fpo.xxx${rawUrl}`;
       seen.add(rawUrl);
 
       const title = (
