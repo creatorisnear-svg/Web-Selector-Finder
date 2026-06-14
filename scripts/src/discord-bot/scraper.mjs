@@ -29,6 +29,22 @@ function resolveUrl(href, baseUrl) {
   return null;
 }
 
+// Try multiple lazy-load attributes in priority order; resolve relative URLs; skip placeholders.
+const THUMB_ATTRS = ['data-src', 'data-original', 'data-lazy-src', 'data-thumb', 'data-video-thumb', 'data-cfsrc', 'data-url', 'src'];
+function extractThumbnail(imgEl, $, baseUrl) {
+  for (const attr of THUMB_ATTRS) {
+    const raw = imgEl.attr(attr) || '';
+    if (!raw || raw.startsWith('data:')) continue;
+    // Skip obvious 1×1 / spinner placeholders
+    if (/blank|placeholder|spinner|loading|1x1|pixel|transparent/i.test(raw)) continue;
+    // Must look like an image URL
+    if (!raw.match(/\.(jpg|jpeg|png|webp|gif)(\?|$)/i) && !raw.includes('/thumb') && !raw.includes('/image')) continue;
+    const resolved = raw.startsWith('http') ? raw : (raw.startsWith('//') ? 'https:' + raw : resolveUrl(raw, baseUrl));
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
 // ── PornHub WebMasters API search ─────────────────────────────────────────────
 // Uses PH's official API endpoint — returns clean JSON, no bot detection issues.
 // Fetches 30 results so the relevance filter has enough to pick 10 good ones from.
@@ -52,13 +68,16 @@ async function searchPornhub(query) {
       return videos.filter(v => v.url && v.title).map(v => {
         let duration = null;
         if (v.duration) {
-          const secs = parseInt(v.duration, 10);
-          if (!isNaN(secs)) {
-            const m = Math.floor(secs / 60);
-            const s = secs % 60;
-            duration = `${m}:${String(s).padStart(2, '0')}`;
-          } else if (typeof v.duration === 'string' && v.duration.includes(':')) {
+          // Check for MM:SS format FIRST — parseInt("20:32") = 20 (not NaN!), which is wrong
+          if (typeof v.duration === 'string' && v.duration.includes(':')) {
             duration = v.duration;
+          } else {
+            const secs = parseInt(v.duration, 10);
+            if (!isNaN(secs) && secs > 0) {
+              const m = Math.floor(secs / 60);
+              const s = secs % 60;
+              duration = `${m}:${String(s).padStart(2, '0')}`;
+            }
           }
         }
         const thumb = v.defaultThumb?.src || (Array.isArray(v.thumbs) && v.thumbs[0]?.src) || null;
@@ -109,9 +128,7 @@ async function searchXvideos(query, page = 0) {
       if (!title || !url) return;
       const rawDuration = $(el).find('.duration').text().trim() || $(el).find('[class*="duration"]').text().trim() || '';
       const duration = rawDuration || null;
-      const thumbEl = $(el).find('img').first();
-      const rawThumb = thumbEl.attr('data-src') || thumbEl.attr('src') || null;
-      const thumbnail = rawThumb && !rawThumb.startsWith('data:') ? rawThumb : null;
+      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
       results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration, thumbnail });
     });
     logger.info(`xvideos search returned ${results.length} results`);
@@ -261,9 +278,7 @@ async function searchXnxx(query, page = 0) {
         }
       }
 
-      const thumbElN = $(el).find('img').first();
-      const rawThumbN = thumbElN.attr('data-src') || thumbElN.attr('src') || null;
-      const thumbnail = rawThumbN && !rawThumbN.startsWith('data:') ? rawThumbN : null;
+      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
 
       results.push({
         title: title.length > 80 ? title.slice(0, 77) + '...' : title,
@@ -320,9 +335,7 @@ async function searchXxbrits(query, page = 0) {
         p = p.parent();
       }
 
-      const thumbElB = $(el).find('img').first();
-      const rawThumbB = thumbElB.attr('data-src') || thumbElB.attr('src') || null;
-      const thumbnail = rawThumbB && !rawThumbB.startsWith('data:') ? rawThumbB : null;
+      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
 
       results.push({
         title: title.length > 80 ? title.slice(0, 77) + '...' : title,

@@ -34,12 +34,13 @@ const SEARCH_URL = '';
 // Pending search sessions: key -> { results, query, lastSitePage, exhausted, currentPage }
 const pendingResults = new Map();
 
-// Short video link store: shortId -> { streamUrl, refUrl, title }
+// Short video link store: shortId -> { streamUrl, refUrl, title, thumbnail }
 const videoLinks = new Map();
 
-function createShortLink(streamUrl, refUrl, title) {
+function createShortLink(streamUrl, refUrl, title, thumbnail = null) {
+  if (!process.env.STREAM_BASE_URL) return null; // Guard: can't create proxy links without a base URL
   const id = Math.random().toString(36).slice(2, 9);
-  videoLinks.set(id, { streamUrl, refUrl, title });
+  videoLinks.set(id, { streamUrl, refUrl, title, thumbnail });
   setTimeout(() => videoLinks.delete(id), 2 * 60 * 60 * 1000);
   return `${process.env.STREAM_BASE_URL}/v/${id}`;
 }
@@ -293,15 +294,16 @@ const healthServer = http.createServer(async (req, res) => {
     const id = shortMatch[1];
     const link = videoLinks.get(id);
     if (!link) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('Link expired or not found'); return; }
-    const { streamUrl, refUrl, title } = link;
+    const { streamUrl, refUrl, title, thumbnail } = link;
     const playUrl = `${process.env.STREAM_BASE_URL}/api/stream/play/video.mp4?url=${encodeURIComponent(streamUrl)}&ref=${encodeURIComponent(refUrl || '')}`;
     const ua = req.headers['user-agent'] || '';
     const isUnfurler = ua.includes('Discordbot') || ua.includes('Twitterbot') || ua.includes('facebookexternalhit') || req.method === 'HEAD';
     if (isUnfurler) {
       const safeTitle = (title || 'Video').replace(/"/g, '&quot;');
+      const thumbMeta = thumbnail ? `\n<meta property="og:image" content="${thumbnail}"/>` : '';
       const html = `<!DOCTYPE html><html><head>
 <meta property="og:type" content="video.other"/>
-<meta property="og:title" content="${safeTitle}"/>
+<meta property="og:title" content="${safeTitle}"/>${thumbMeta}
 <meta property="og:video" content="${playUrl}"/>
 <meta property="og:video:secure_url" content="${playUrl}"/>
 <meta property="og:video:type" content="video/mp4"/>
@@ -504,23 +506,28 @@ async function handleVideoFetch(interaction, key, picked, restorePage) {
   const stream = await getVideoStreamUrl(picked.url);
   logger.info(`Stream result: ${stream ? `${stream.isHls ? 'HLS' : 'MP4'} ${stream.url?.slice(0, 60)}` : 'null'}`);
 
-  if (STREAM_BASE_URL && stream?.url) {
+  if (stream?.url) {
     let shortUrl;
     if (stream.isHls) {
-      shortUrl = createShortLink(stream.url, picked.url, picked.title);
-      logger.info(`HLS short link: ${shortUrl}`);
+      shortUrl = createShortLink(stream.url, picked.url, picked.title, picked.thumbnail);
+      if (shortUrl) logger.info(`HLS short link: ${shortUrl}`);
     } else {
       const sizeBytes = await probeContentLength(stream.url, picked.url);
       const MAX_EMBED_BYTES = 50 * 1024 * 1024;
       if (sizeBytes === null || sizeBytes <= MAX_EMBED_BYTES) {
-        shortUrl = createShortLink(stream.url, picked.url, picked.title);
-        logger.info(`Fast path — short link: ${shortUrl} (size=${sizeBytes ?? 'unknown'})`);
+        shortUrl = createShortLink(stream.url, picked.url, picked.title, picked.thumbnail);
+        if (shortUrl) logger.info(`Fast path — short link: ${shortUrl} (size=${sizeBytes ?? 'unknown'})`);
       } else {
         logger.warn(`Stream too large to embed (${sizeBytes} bytes) — falling through`);
       }
     }
     if (shortUrl) {
       await interaction.followUp({ content: shortUrl });
+      sent = true;
+    } else if (!stream.isHls && stream.url) {
+      // No proxy configured — send direct CDN URL; Discord can embed plain .mp4 links
+      logger.info(`No STREAM_BASE_URL — sending direct CDN URL`);
+      await interaction.followUp({ content: `🎬 **${picked.title}**\n${stream.url}` });
       sent = true;
     }
   }
@@ -533,8 +540,8 @@ async function handleVideoFetch(interaction, key, picked, restorePage) {
       new Promise(r => setTimeout(() => r(null), YTDLP_TIMEOUT_MS)),
     ]);
     if (directUrl) {
-      if (STREAM_BASE_URL) {
-        const shortUrl = createShortLink(directUrl, picked.url, picked.title);
+      const shortUrl = createShortLink(directUrl, picked.url, picked.title, picked.thumbnail);
+      if (shortUrl) {
         await interaction.followUp({ content: shortUrl });
       } else {
         await interaction.followUp({ content: `🎬 **${picked.title}**\n${directUrl}` });
