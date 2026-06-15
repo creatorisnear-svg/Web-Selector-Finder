@@ -128,6 +128,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .badge-xxbrits  { background: #1e90ff; color: #fff; }
 .badge-fpoxxx          { background: #9b59b6; color: #fff; }
 .badge-freepornvideos  { background: #e74c3c; color: #fff; }
+.card-actors { font-size: .68rem; color: var(--muted); margin-top: .2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Skeleton loading ─────────────────────────────────────────────────────── */
 @keyframes shimmer {
@@ -230,7 +231,10 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .spinner { width: 34px; height: 34px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .vp-info { padding: .85rem 1rem; border-bottom: 1px solid var(--border); }
-.vp-info h2 { font-size: 1rem; font-weight: 700; line-height: 1.35; margin-bottom: .5rem; }
+.vp-info h2 { font-size: 1rem; font-weight: 700; line-height: 1.35; margin-bottom: .3rem; }
+.vp-actors { font-size: .78rem; color: var(--muted); margin-bottom: .45rem; }
+.vp-actors span { color: var(--accent); font-weight: 600; cursor: pointer; }
+.vp-actors span:hover { text-decoration: underline; }
 .vp-info-meta { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
 .vp-info-meta a { color: var(--accent); font-size: .82rem; text-decoration: none; }
 .vp-info-meta a:hover { text-decoration: underline; }
@@ -400,6 +404,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
       </div>
       <div class="vp-info">
         <h2 id="vp-title"></h2>
+        <div class="vp-actors" id="vp-actors" style="display:none"></div>
         <div class="vp-info-meta">
           <span id="vp-badge"></span>
           <a id="vp-link" href="#" target="_blank" rel="noopener noreferrer" class="ext-link" title="⚠️ Opens the original site directly — your IP will be visible to that site">Open source page &#x2197; <span class="ext-warn">IP exposed</span></a>
@@ -621,9 +626,10 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   }
 
   /* ── Search ──────────────────────────────────────────────────────────────── */
-  function doSearch() {
-    var q = qEl.value.trim();
+  function doSearch(overrideQ) {
+    var q = (typeof overrideQ === 'string' ? overrideQ : qEl.value).trim();
     if (!q) return;
+    if (typeof overrideQ === 'string') { qEl.value = q; closeVideoPage(); }
     closeAC();
     currentQuery = q; currentPage = 0; maxKnownPage = 0; hasNextPage = false;
     trendHead.style.display = 'none';
@@ -721,6 +727,10 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
       ? '<img src="' + thumbUrl(r.thumbnail) + '" alt="" loading="lazy" onerror="this.parentNode.innerHTML=\'<div class=no-thumb>\u25b6</div>\'">'
       : '<div class="no-thumb">\u25b6</div>';
     var durHtml = r.duration ? '<span class="dur-badge">' + esc(r.duration) + '</span>' : '';
+    var actors = extractActorsFromTitle(r.title);
+    var actorsHtml = actors.length
+      ? '<div class="card-actors">\uD83D\uDC64 ' + esc(actors.join(' \u00B7 ')) + '</div>'
+      : '';
     card.innerHTML =
       '<div class="thumb-wrap">' + thumbInner +
         '<div class="play-overlay">' +
@@ -732,6 +742,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
       '</div>' +
       '<div class="card-info">' +
         '<div class="card-title">' + esc(r.title) + '</div>' +
+        actorsHtml +
         '<div class="card-meta">' + badgeHtml(r.source) + '</div>' +
       '</div>';
     card.addEventListener('click', function() { openVideoPage(r); });
@@ -830,6 +841,8 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     vpFonThumb.style.display = 'none';
   }
 
+  var vpActors = document.getElementById('vp-actors');
+
   function openVideoPage(r) {
     currentVideoData = r;
     fonFetching = false;
@@ -839,6 +852,17 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     vpBadge.className      = b.cls;
     vpBadge.textContent    = b.label;
     vpLink.href            = r.url;
+
+    // Show detected actor names; clicking one searches for them
+    var actors = extractActorsFromTitle(r.title);
+    if (actors.length) {
+      vpActors.innerHTML = '\uD83D\uDC64 ' + actors.map(function(a) {
+        return '<span onclick="doSearch(\'' + a.replace(/'/g, "\\'") + '\')">' + esc(a) + '</span>';
+      }).join(' \u00B7 ');
+      vpActors.style.display = 'block';
+    } else {
+      vpActors.style.display = 'none';
+    }
     vpVid.style.display    = 'none';
     vpVidStatus.style.display = 'flex';
     vpVidStatus.innerHTML  = '<div class="spinner"></div><span>Loading video\u2026</span>';
@@ -872,39 +896,59 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   }
 
   /* ── Actor/keyword extraction ────────────────────────────────────────────── */
-  function extractActorsAndKeywords(title) {
-    // Strip leading site-name prefix like "Brazzers - " or "[SiteName] "
-    var clean = title.replace(/^\[[^\]]+\]\s*[-–]?\s*/, '')
-                     .replace(/^[A-Z][A-Za-z0-9]+\s*[-–]\s*/, '');
 
-    // Split on " - " to find distinct segments (sites often separate actors from description this way)
-    var parts = clean.split(/\s+[-–]\s+/);
+  // Known studio/channel words that should never be treated as actor names
+  var STUDIO_WORDS = new Set([
+    'brazzers','naughty','america','mofos','reality','kings','bang','bros','private',
+    'vixen','blacked','tushy','deeper','filthy','family','wicked','digital','playground',
+    'evil','angel','girlfriends','films','productions','media','network','official',
+    'premium','originals','studios','studio','pictures','entertainment','presents',
+    'team','skeet','pure','taboo','fantasy','hustler','penthouse','playboy',
+    'passion','passion-hd','passion hd','elegant','angel','score','scoreland',
+  ]);
+
+  // Is this segment a likely REAL person name (not a studio/channel name)?
+  function isPersonName(seg) {
+    var words = seg.trim().split(/\s+/);
+    if (words.length < 2 || words.length > 3) return false;
+    // Every word must start uppercase and contain only letters/apostrophes/hyphens
+    if (!words.every(function(w) { return /^[A-Z][a-zA-Z'-]+$/.test(w) && w.length > 1; })) return false;
+    // Reject if any word is a known studio word
+    if (words.some(function(w) { return STUDIO_WORDS.has(w.toLowerCase()); })) return false;
+    return true;
+  }
+
+  // Extract real actor names from a title, ignoring studio prefixes
+  function extractActorsFromTitle(title) {
+    // Remove [Studio] bracket prefix
+    var t = title.replace(/^\[[^\]]+\]\s*[-–]?\s*/, '').trim();
+    var segments = t.split(/\s*[-–]\s*/);
+
+    // If there are multiple segments, skip the FIRST one (almost always studio/channel)
+    var searchSegs = segments.length > 1 ? segments.slice(1) : segments;
+
     var actors = [];
-    parts.forEach(function(part) {
-      part = part.trim();
-      // A "name" segment: 2-4 words, each starts with uppercase, no numbers, reasonable length
-      var words = part.split(/\s+/);
-      if (words.length >= 2 && words.length <= 4 &&
-          words.every(function(w) { return /^[A-Z][a-zA-Z'-]+$/.test(w) && w.length > 1; })) {
-        actors.push(part);
-      }
+    searchSegs.forEach(function(seg) {
+      if (isPersonName(seg)) actors.push(seg.trim());
     });
 
-    // Also detect "Name & Name", "Name + Name", "Name feat. Name" patterns in the full title
-    var multiRx = /([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+))\s*(?:&|\+|feat\.?)\s*([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)?)/g;
+    // Also match "Name & Name" / "Name + Name" patterns inside remaining segments
+    var joinedContent = searchSegs.join(' ');
+    var multiRx = /([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)?)\s*(?:&|\+|feat\.?)\s*([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)?)/g;
     var m;
-    while ((m = multiRx.exec(title)) !== null) {
+    while ((m = multiRx.exec(joinedContent)) !== null) {
       [m[1], m[2]].forEach(function(name) {
-        if (!actors.includes(name)) actors.push(name);
+        if (isPersonName(name) && !actors.includes(name.trim())) actors.push(name.trim());
       });
     }
 
-    if (actors.length > 0) {
-      // Actor names make the most specific cross-site query
-      return actors.slice(0, 2).join(' ');
-    }
+    return actors.slice(0, 2);
+  }
 
-    // Fallback: content keywords
+  // Legacy helper kept for related-video keyword lookup
+  function extractActorsAndKeywords(title) {
+    var actors = extractActorsFromTitle(title);
+    if (actors.length) return actors.join(' ');
     return extractKeywords(title);
   }
 
@@ -969,13 +1013,23 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 
   /* ── Build search query for cross-site lookup ─────────────────────────────── */
   function buildFindQuery(title) {
-    // Try actor extraction first (most specific cross-site signal)
-    var actors = extractActorsAndKeywords(title);
-    if (actors && actors !== extractKeywords(title)) return actors; // actor names found
+    // Step 1: strip [Studio] bracket prefix
+    var t = title.replace(/^\[[^\]]+\]\s*[-–]?\s*/, '').trim();
 
-    // Build a broader keyword query — more words = better recall
-    var STOP = new Set(['the','and','for','with','that','this','from','but','all','not','are','was','she','her','his','him','they','video','xxx','sex','full','hd','hot','big','teen','milf']);
-    var words = title.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+    // Step 2: split on " - " — first segment is almost always studio/channel, skip it
+    var segments = t.split(/\s*[-–]\s*/);
+    var contentSegs = segments.length > 1 ? segments.slice(1) : segments;
+    var content = contentSegs.join(' ');
+
+    // Step 3: if real actor names exist in the content segments, use them — most specific
+    var actors = extractActorsFromTitle(title);
+    if (actors.length) return actors.join(' ');
+
+    // Step 4: fall back to content keywords (skip generic/junk words)
+    var STOP = new Set(['the','and','for','with','that','this','from','but','all','not','are','was',
+      'she','her','his','him','they','video','xxx','sex','full','hdd','hot','big','gets','get',
+      'having','being','making','teen','milf','fuck','fucking','fucked','cock','pussy','ass']);
+    var words = content.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
       .filter(function(w) { return w.length >= 3 && !STOP.has(w); });
     return words.slice(0, 5).join(' ') || title.slice(0, 60);
   }
