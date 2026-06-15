@@ -26,9 +26,9 @@ import { logger, redact, redactUrl } from './logger.mjs';
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 
-if (!TOKEN || !CLIENT_ID) {
-  logger.error('Missing DISCORD_TOKEN or DISCORD_CLIENT_ID environment variables.');
-  process.exit(1);
+const DISCORD_ENABLED = !!(TOKEN && CLIENT_ID);
+if (!DISCORD_ENABLED) {
+  logger.warn('DISCORD_TOKEN or DISCORD_CLIENT_ID not set — running in web-only mode (HTTP server will still start).');
 }
 
 const SEARCH_URL = '';
@@ -581,9 +581,10 @@ const commands = [
     .setDescription('Get the link to the EverGuard web search'),
 ].map(cmd => cmd.toJSON());
 
-const rest = new REST({ version: '10' }).setToken(TOKEN);
+const rest = DISCORD_ENABLED ? new REST({ version: '10' }).setToken(TOKEN) : null;
 
 async function registerCommands() {
+  if (!rest) return;
   try {
     logger.info('Registering slash commands...');
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
@@ -593,24 +594,26 @@ async function registerCommands() {
   }
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = DISCORD_ENABLED ? new Client({ intents: [GatewayIntentBits.Guilds] }) : null;
 
-client.once('clientReady', () => {
-  logger.info(`Bot is online as ${client.user.tag}`);
-});
+if (client) {
+  client.once('clientReady', () => {
+    logger.info(`Bot is online as ${client.user.tag}`);
+  });
 
-client.on('interactionCreate', async interaction => {
-  try {
-    await handleInteraction(interaction);
-  } catch (err) {
-    logger.error('Interaction error:', err.message, err.stack);
+  client.on('interactionCreate', async interaction => {
     try {
-      const msg = { content: '❌ Something went wrong. Please try again.', flags: MessageFlags.Ephemeral };
-      if (interaction.deferred || interaction.replied) await interaction.editReply(msg);
-      else await interaction.reply(msg);
-    } catch (_) {}
-  }
-});
+      await handleInteraction(interaction);
+    } catch (err) {
+      logger.error('Interaction error:', err.message, err.stack);
+      try {
+        const msg = { content: '❌ Something went wrong. Please try again.', flags: MessageFlags.Ephemeral };
+        if (interaction.deferred || interaction.replied) await interaction.editReply(msg);
+        else await interaction.reply(msg);
+      } catch (_) {}
+    }
+  });
+}
 
 process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled rejection:', reason instanceof Error ? reason.stack : reason);
@@ -996,5 +999,9 @@ async function handleInteraction(interaction) {
   }
 }
 
-await registerCommands();
-client.login(TOKEN);
+if (DISCORD_ENABLED) {
+  await registerCommands();
+  client.login(TOKEN);
+} else {
+  logger.info('Web-only mode active — HTTP server running, Discord bot disabled.');
+}

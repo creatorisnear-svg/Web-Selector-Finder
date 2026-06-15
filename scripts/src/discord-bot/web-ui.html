@@ -727,7 +727,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
       ? '<img src="' + thumbUrl(r.thumbnail) + '" alt="" loading="lazy" onerror="this.parentNode.innerHTML=\'<div class=no-thumb>\u25b6</div>\'">'
       : '<div class="no-thumb">\u25b6</div>';
     var durHtml = r.duration ? '<span class="dur-badge">' + esc(r.duration) + '</span>' : '';
-    var actors = extractActorsFromTitle(r.title);
+    var actors = getActors(r);
     var actorsHtml = actors.length
       ? '<div class="card-actors">\uD83D\uDC64 ' + esc(actors.join(' \u00B7 ')) + '</div>'
       : '';
@@ -854,7 +854,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     vpLink.href            = r.url;
 
     // Show detected actor names; clicking one searches for them
-    var actors = extractActorsFromTitle(r.title);
+    var actors = getActors(r);
     if (actors.length) {
       vpActors.innerHTML = '\uD83D\uDC64 ' + actors.map(function(a) {
         return '<span onclick="doSearch(\'' + a.replace(/'/g, "\\'") + '\')">' + esc(a) + '</span>';
@@ -897,42 +897,62 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 
   /* ── Actor/keyword extraction ────────────────────────────────────────────── */
 
-  // Known studio/channel words that should never be treated as actor names
-  var STUDIO_WORDS = new Set([
+  // Words that are NEVER part of a real person's name
+  var NOT_NAME_WORDS = new Set([
+    // Studios / channels
     'brazzers','naughty','america','mofos','reality','kings','bang','bros','private',
-    'vixen','blacked','tushy','deeper','filthy','family','wicked','digital','playground',
-    'evil','angel','girlfriends','films','productions','media','network','official',
+    'vixen','blacked','tushy','deeper','filthy','wicked','digital','playground',
+    'evil','girlfriends','films','productions','media','network','official',
     'premium','originals','studios','studio','pictures','entertainment','presents',
     'team','skeet','pure','taboo','fantasy','hustler','penthouse','playboy',
-    'passion','passion-hd','passion hd','elegant','angel','score','scoreland',
+    'passion','elegant','score','scoreland','kink','bangbros','fakehub',
+    // Relation / role words
+    'stepmom','stepson','stepdaughter','stepdad','stepbro','stepsis','stepbrother',
+    'stepsister','mom','dad','son','daughter','sister','brother','aunt','uncle',
+    'cousin','wife','husband','girlfriend','boyfriend','teacher','student','nurse',
+    'maid','secretary','babysitter','milf','cougar','teen','mature','granny',
+    // Action / descriptor words that can appear Title-Cased
+    'gets','got','get','gives','give','takes','take','takes','fucks','fuck','fucked',
+    'fucking','sucks','suck','sucked','rides','ride','loves','love','needs','need',
+    'wants','want','helps','help','teaches','teach','shows','show','makes','made',
+    'deep','hard','rough','huge','big','massive','hot','horny','sexy','wet',
+    'full','part','scene','video','clip','episode','hd','pov','bts',
+    // Anatomy words that appear Title-Cased in titles
+    'cock','dick','pussy','ass','tits','boobs','butt','mouth','throat','anal',
+    // Other common junk
+    'creampie','facial','squirt','blowjob','handjob','footjob','threesome',
+    'compilation','best','ever','first','last','real','new','more','with','feat',
   ]);
 
-  // Is this segment a likely REAL person name (not a studio/channel name)?
+  // Is this dash-separated segment a likely REAL person name?
   function isPersonName(seg) {
     var words = seg.trim().split(/\s+/);
+    // Names are 2–3 words
     if (words.length < 2 || words.length > 3) return false;
-    // Every word must start uppercase and contain only letters/apostrophes/hyphens
-    if (!words.every(function(w) { return /^[A-Z][a-zA-Z'-]+$/.test(w) && w.length > 1; })) return false;
-    // Reject if any word is a known studio word
-    if (words.some(function(w) { return STUDIO_WORDS.has(w.toLowerCase()); })) return false;
+    // Every word: letters/apostrophes/hyphens only, reasonable length
+    if (!words.every(function(w) { return /^[A-Za-z][a-zA-Z'-]+$/.test(w) && w.length >= 2; })) return false;
+    // Reject if ANY word is on the blocklist
+    if (words.some(function(w) { return NOT_NAME_WORDS.has(w.toLowerCase()); })) return false;
+    // Reject all-lowercase segments — real names in titles are typically Title-Cased
+    if (words.every(function(w) { return w === w.toLowerCase(); })) return false;
     return true;
   }
 
-  // Extract real actor names from a title, ignoring studio prefixes
+  // Extract real actor names from a title, using dash-segment heuristic
   function extractActorsFromTitle(title) {
     // Remove [Studio] bracket prefix
     var t = title.replace(/^\[[^\]]+\]\s*[-–]?\s*/, '').trim();
     var segments = t.split(/\s*[-–]\s*/);
 
-    // If there are multiple segments, skip the FIRST one (almost always studio/channel)
+    // Skip the FIRST segment (almost always studio/channel name)
     var searchSegs = segments.length > 1 ? segments.slice(1) : segments;
 
     var actors = [];
     searchSegs.forEach(function(seg) {
-      if (isPersonName(seg)) actors.push(seg.trim());
+      if (isPersonName(seg) && !actors.includes(seg.trim())) actors.push(seg.trim());
     });
 
-    // Also match "Name & Name" / "Name + Name" patterns inside remaining segments
+    // Also catch "Name & Name" / "Name + Name" patterns mid-title
     var joinedContent = searchSegs.join(' ');
     var multiRx = /([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)?)\s*(?:&|\+|feat\.?)\s*([A-Z][a-zA-Z'-]+(?:\s+[A-Z][a-zA-Z'-]+)?)/g;
     var m;
@@ -943,6 +963,12 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     }
 
     return actors.slice(0, 2);
+  }
+
+  // Get actors for a result: prefer API-provided list, fall back to title extraction
+  function getActors(r) {
+    if (Array.isArray(r.actors) && r.actors.length) return r.actors.slice(0, 2);
+    return extractActorsFromTitle(r.title);
   }
 
   // Legacy helper kept for related-video keyword lookup
@@ -1021,8 +1047,8 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     var contentSegs = segments.length > 1 ? segments.slice(1) : segments;
     var content = contentSegs.join(' ');
 
-    // Step 3: if real actor names exist in the content segments, use them — most specific
-    var actors = extractActorsFromTitle(title);
+    // Step 3: if real actor names exist, use them — most specific cross-site signal
+    var actors = getActors(currentVideoData);
     if (actors.length) return actors.join(' ');
 
     // Step 4: fall back to content keywords (skip generic/junk words)

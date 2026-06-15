@@ -84,11 +84,16 @@ async function searchPornhub(query, page = 0) {
         }
         const thumb = v.defaultThumb?.src || (Array.isArray(v.thumbs) && v.thumbs[0]?.src) || null;
         const thumbnail = thumb && !thumb.startsWith('data:') ? thumb : null;
+        // Extract actor names from PH API response (most reliable source)
+        const actors = Array.isArray(v.actors)
+          ? v.actors.slice(0, 2).map(a => a.actorName || a.name || '').filter(Boolean)
+          : [];
         return {
           title: v.title.length > 80 ? v.title.slice(0, 77) + '...' : v.title,
           url: v.url,
           duration,
           thumbnail,
+          ...(actors.length ? { actors } : {}),
         };
       });
     }
