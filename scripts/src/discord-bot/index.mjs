@@ -54,8 +54,8 @@ const PROXY_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.5',
   'Cookie': 'age_verified=1; ageGate=true; confirm=1',
 };
-const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com', 'media.xxbrits.com', 'fpo.xxx', 'freepornvideos.xxx'];
-const THUMB_HOSTS = [...ALLOWED_HOSTS, 'img.xvideos.com', 'img-cdn.xvideos-cdn.com', 'thumb.xnxx.com', 'img.xnxx-cdn.com', 'img.xxbrits.com', 'cdn.fpo.xxx', 'img.fpo.xxx', 'cdn.freepornvideos.xxx', 'img.freepornvideos.xxx', 'static.freepornvideos.xxx'];
+const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com', 'media.xxbrits.com', 'fpo.xxx', 'freepornvideos.xxx', 'taboodude.com', 'hqporner.com', 'fullporn.xxx'];
+const THUMB_HOSTS = [...ALLOWED_HOSTS, 'img.xvideos.com', 'img-cdn.xvideos-cdn.com', 'thumb.xnxx.com', 'img.xnxx-cdn.com', 'img.xxbrits.com', 'cdn.fpo.xxx', 'img.fpo.xxx', 'cdn.freepornvideos.xxx', 'img.freepornvideos.xxx', 'static.freepornvideos.xxx', 'cdn.taboodude.com', 'img.taboodude.com', 'static.taboodude.com', 'cdn.hqporner.com', 'img.hqporner.com', 'thumb.hqporner.com', 'cdn.fullporn.xxx', 'img.fullporn.xxx'];
 
 function isAllowedUrl(raw) {
   try { return ALLOWED_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; }
@@ -625,7 +625,7 @@ process.on('uncaughtException', (err) => {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 5;
-const SOURCE_LABELS = { pornhub: 'PH', xvideos: 'XV', xnxx: 'XNXX', xxbrits: 'XXBrits', fpoxxx: 'FPoxxx', freepornvideos: 'FPV' };
+const SOURCE_LABELS = { pornhub: 'PH', xvideos: 'XV', xnxx: 'XNXX', xxbrits: 'XXBrits', fpoxxx: 'FPoxxx', freepornvideos: 'FPV', taboodude: 'Taboo', hqporner: 'HQ', fullporn: 'FullP' };
 const YTDLP_TIMEOUT_MS = 12000;
 
 // ── Build ephemeral results page ──────────────────────────────────────────────

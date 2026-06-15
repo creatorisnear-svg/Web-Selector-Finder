@@ -526,6 +526,223 @@ async function searchFpoxxx(query, page = 0) {
   }
 }
 
+// ── TabooDude scraper ─────────────────────────────────────────────────────────
+// URL: https://taboodude.com/search?q={query}&page={page+1} (1-indexed)
+async function searchTaboodude(query, page = 0) {
+  const pageParam = page > 0 ? `&page=${page + 1}` : '';
+  const searchUrl = `https://taboodude.com/search?q=${encodeURIComponent(query)}${pageParam}`;
+  logger.info(`taboodude search: ${redact(query)} p${page}`);
+  try {
+    const { data } = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'text/html',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      timeout: 15000,
+    });
+    const $ = cheerio.load(data);
+    const seen = new Set();
+    const results = [];
+
+    // taboodude uses .th-item or .thumb-block with <a> containing video links
+    const containers = $('.th-item, .thumb-block, .video-item, .item').toArray();
+    for (const el of containers) {
+      if (results.length >= 20) break;
+      const anchor = $(el).find('a[href]').first();
+      const rawUrl = anchor.attr('href') || '';
+      if (!rawUrl || seen.has(rawUrl)) continue;
+      if (!/\/(video|videos|v|watch|embed|\d{4,})/i.test(rawUrl)) continue;
+      seen.add(rawUrl);
+      const url = rawUrl.startsWith('http') ? rawUrl : `https://taboodude.com${rawUrl}`;
+
+      const title = (
+        anchor.attr('title') ||
+        $(el).find('.title, .video-title, h3, h4').first().text() ||
+        $(el).find('img').first().attr('alt') || ''
+      ).replace(/\s+/g, ' ').trim();
+      if (!title || title.length < 4) continue;
+
+      const durText = $(el).find('.duration, .dur, [class*="duration"]').first().text().trim();
+      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+
+      results.push({
+        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+        url,
+        duration: durText || null,
+        thumbnail,
+      });
+    }
+
+    // Fallback: generic <a href> video link scraping
+    if (results.length === 0) {
+      $('a[href]').each((_, el) => {
+        if (results.length >= 20) return;
+        const href = $(el).attr('href') || '';
+        if (!href || seen.has(href) || !/\/(video|videos|v|watch|\d{5,})/i.test(href)) return;
+        if (/\/(search|category|tag|user|page)\//i.test(href)) return;
+        seen.add(href);
+        const url = href.startsWith('http') ? href : `https://taboodude.com${href}`;
+        const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text()).trim();
+        if (!title || title.length < 4) return;
+        const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+        results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration: null, thumbnail });
+      });
+    }
+
+    logger.info(`taboodude search returned ${results.length} results`);
+    return results;
+  } catch (err) {
+    logger.error(`taboodude search failed: ${err.message}`);
+    return [];
+  }
+}
+
+// ── HQPorner scraper ──────────────────────────────────────────────────────────
+// URL: https://www.hqporner.com/hdporn/{page}/q:{query}/  (1-indexed page)
+async function searchHqporner(query, page = 0) {
+  const qSlug = encodeURIComponent(query.trim().replace(/\s+/g, '-'));
+  const pageNum = page + 1;
+  const searchUrl = `https://www.hqporner.com/hdporn/${pageNum}/q:${qSlug}/`;
+  logger.info(`hqporner search: ${redact(query)} p${page}`);
+  try {
+    const { data } = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'text/html',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.hqporner.com/',
+      },
+      timeout: 15000,
+    });
+    const $ = cheerio.load(data);
+    const seen = new Set();
+    const results = [];
+
+    // hqporner uses .pcVideoListItem or .video-item wrappers
+    const containers = $('.pcVideoListItem, .video-item, li[class*="item"], article').toArray();
+    for (const el of containers) {
+      if (results.length >= 20) break;
+      const anchor = $(el).find('a[href*="/p/"], a[href*="/video/"], a[href]').first();
+      const rawUrl = anchor.attr('href') || '';
+      if (!rawUrl || seen.has(rawUrl)) continue;
+      seen.add(rawUrl);
+      const url = rawUrl.startsWith('http') ? rawUrl : `https://www.hqporner.com${rawUrl}`;
+
+      const title = (
+        anchor.attr('title') ||
+        $(el).find('.hd-thumbnail span, .title, h3, h4').first().text() ||
+        $(el).find('img').attr('alt') || ''
+      ).replace(/\s+/g, ' ').trim();
+      if (!title || title.length < 4) continue;
+
+      const durText = $(el).find('.duration, span[class*="duration"], .videoduration').first().text().trim();
+      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+
+      results.push({
+        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+        url,
+        duration: durText || null,
+        thumbnail,
+      });
+    }
+
+    // Fallback — scrape <a href="/p/..."> links directly
+    if (results.length === 0) {
+      $('a[href]').each((_, el) => {
+        if (results.length >= 20) return;
+        const href = $(el).attr('href') || '';
+        if (!href || seen.has(href) || !/\/p\/|\/video\//i.test(href)) return;
+        seen.add(href);
+        const url = href.startsWith('http') ? href : `https://www.hqporner.com${href}`;
+        const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text()).replace(/\s+/g, ' ').trim();
+        if (!title || title.length < 4) return;
+        const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+        results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration: null, thumbnail });
+      });
+    }
+
+    logger.info(`hqporner search returned ${results.length} results`);
+    return results;
+  } catch (err) {
+    logger.error(`hqporner search failed: ${err.message}`);
+    return [];
+  }
+}
+
+// ── FullPorn.xxx scraper ──────────────────────────────────────────────────────
+// URL: https://www.fullporn.xxx/search/{query}-/  page 2+: /search/{query}-/{page}/
+async function searchFullporn(query, page = 0) {
+  const qSlug = encodeURIComponent(query.trim().replace(/\s+/g, '-'));
+  const pageSuffix = page > 0 ? `${page + 1}/` : '';
+  const searchUrl = `https://www.fullporn.xxx/search/${qSlug}-/${pageSuffix}`;
+  logger.info(`fullporn.xxx search: ${redact(query)} p${page}`);
+  try {
+    const { data } = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'text/html',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie': 'age_verified=1',
+      },
+      timeout: 15000,
+    });
+    const $ = cheerio.load(data);
+    const seen = new Set();
+    const results = [];
+
+    // fullporn.xxx uses .item div with <a href="/video/..."> links
+    const containers = $('.item, .thumb-block, .video-item').toArray();
+    for (const el of containers) {
+      if (results.length >= 20) break;
+      const anchor = $(el).find('a[href*="/video/"], a[href*="/videos/"], a[href]').first();
+      const rawUrl = anchor.attr('href') || '';
+      if (!rawUrl || seen.has(rawUrl)) continue;
+      if (!/\/(video|videos|watch|v\/)\/?/i.test(rawUrl)) continue;
+      seen.add(rawUrl);
+      const url = rawUrl.startsWith('http') ? rawUrl : `https://www.fullporn.xxx${rawUrl}`;
+
+      const title = (
+        anchor.attr('title') ||
+        $(el).find('.title, strong.title, h3').first().text() ||
+        $(el).find('img').attr('alt') || ''
+      ).replace(/\s+/g, ' ').trim();
+      if (!title || title.length < 4) continue;
+
+      const durText = $(el).find('.duration, span[class*="dur"]').first().text().trim();
+      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+
+      results.push({
+        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+        url,
+        duration: durText || null,
+        thumbnail,
+      });
+    }
+
+    // Fallback: any <a> pointing to /video(s)/
+    if (results.length === 0) {
+      $('a[href]').each((_, el) => {
+        if (results.length >= 20) return;
+        const href = $(el).attr('href') || '';
+        if (!href || seen.has(href) || !/\/(video|videos)\//i.test(href)) return;
+        seen.add(href);
+        const url = href.startsWith('http') ? href : `https://www.fullporn.xxx${href}`;
+        const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text()).replace(/\s+/g, ' ').trim();
+        if (!title || title.length < 4) return;
+        const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+        results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration: null, thumbnail });
+      });
+    }
+
+    logger.info(`fullporn.xxx search returned ${results.length} results`);
+    return results;
+  } catch (err) {
+    logger.error(`fullporn.xxx search failed: ${err.message}`);
+    return [];
+  }
+}
+
 // ── FreePornVideos scraper ─────────────────────────────────────────────────────
 async function searchFreepornvideos(query, page = 0) {
   // Page 0 = no page param, page 1+ = &page=N (1-indexed so page+1)
@@ -665,6 +882,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     const scrapers = {
       pornhub: searchPornhub, xvideos: searchXvideos, xnxx: searchXnxx,
       xxbrits: searchXxbrits, fpoxxx: searchFpoxxx, freepornvideos: searchFreepornvideos,
+      taboodude: searchTaboodude, hqporner: searchHqporner, fullporn: searchFullporn,
     };
     const fn = scrapers[source];
     if (fn) {
@@ -676,13 +894,16 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     }
   }
 
-  const [ph, xv, xn, xb, fp, fpv] = await Promise.all([
+  const [ph, xv, xn, xb, fp, fpv, td, hq, fullp] = await Promise.all([
     searchPornhub(query, page).catch(e => { logger.warn(`pornhub failed: ${e.message}`); return []; }),
     searchXvideos(query, page).catch(e => { logger.warn(`xvideos failed: ${e.message}`); return []; }),
     searchXnxx(query, page).catch(e => { logger.warn(`xnxx failed: ${e.message}`); return []; }),
     searchXxbrits(query, page).catch(e => { logger.warn(`xxbrits failed: ${e.message}`); return []; }),
     searchFpoxxx(query, page).catch(e => { logger.warn(`fpoxxx failed: ${e.message}`); return []; }),
     searchFreepornvideos(query, page).catch(e => { logger.warn(`freepornvideos failed: ${e.message}`); return []; }),
+    searchTaboodude(query, page).catch(e => { logger.warn(`taboodude failed: ${e.message}`); return []; }),
+    searchHqporner(query, page).catch(e => { logger.warn(`hqporner failed: ${e.message}`); return []; }),
+    searchFullporn(query, page).catch(e => { logger.warn(`fullporn failed: ${e.message}`); return []; }),
   ]);
 
   // Tag each result with its source
@@ -690,6 +911,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
   const tagged = [
     tag(ph, 'pornhub'), tag(xv, 'xvideos'), tag(xn, 'xnxx'),
     tag(xb, 'xxbrits'), tag(fp, 'fpoxxx'), tag(fpv, 'freepornvideos'),
+    tag(td, 'taboodude'), tag(hq, 'hqporner'), tag(fullp, 'fullporn'),
   ];
 
   // Round-robin interleave so results from all sites appear on every page
@@ -714,7 +936,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
   const words = queryGroups(query);
   const final = sortByRelevance(deduped, words);
 
-  logger.info(`Combined search ${redact(query)} p${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} → ${final.length} (after dedup+score)`);
+  logger.info(`Combined search ${redact(query)} p${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} td=${td.length} hq=${hq.length} fullp=${fullp.length} → ${final.length} (after dedup+score)`);
   return final;
 }
 

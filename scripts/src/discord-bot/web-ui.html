@@ -86,6 +86,9 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .chip-xxbrits.active{ background: #1e90ff; border-color: #1e90ff; color: #fff; }
 .chip-fpoxxx.active { background: #9b59b6; border-color: #9b59b6; color: #fff; }
 .chip-freepornvideos.active { background: #e74c3c; border-color: #e74c3c; color: #fff; }
+.chip-taboodude.active  { background: #c0392b; border-color: #c0392b; color: #fff; }
+.chip-hqporner.active   { background: #27ae60; border-color: #27ae60; color: #fff; }
+.chip-fullporn.active   { background: #d35400; border-color: #d35400; color: #fff; }
 
 /* ── Status bar ───────────────────────────────────────────────────────────── */
 #status { text-align: center; color: var(--muted); padding: 1.25rem 1rem .4rem; font-size: .85rem; min-height: 2.5rem; }
@@ -128,6 +131,9 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .badge-xxbrits  { background: #1e90ff; color: #fff; }
 .badge-fpoxxx          { background: #9b59b6; color: #fff; }
 .badge-freepornvideos  { background: #e74c3c; color: #fff; }
+.badge-taboodude { background: #c0392b; color: #fff; }
+.badge-hqporner  { background: #27ae60; color: #fff; }
+.badge-fullporn  { background: #d35400; color: #fff; }
 .card-actors { font-size: .68rem; color: var(--muted); margin-top: .2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Skeleton loading ─────────────────────────────────────────────────────── */
@@ -376,6 +382,9 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     <button class="chip chip-xxbrits"         data-src="xxbrits">XXBrits</button>
     <button class="chip chip-fpoxxx"          data-src="fpoxxx">FPoxxx</button>
     <button class="chip chip-freepornvideos"  data-src="freepornvideos">FreePornVideos</button>
+    <button class="chip chip-taboodude"       data-src="taboodude">TabooDude</button>
+    <button class="chip chip-hqporner"        data-src="hqporner">HQPorner</button>
+    <button class="chip chip-fullporn"        data-src="fullporn">FullPorn</button>
   </div>
 </div>
 
@@ -522,6 +531,9 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     xxbrits:        { cls: 'badge badge-xxbrits',        label: 'XXBrits' },
     fpoxxx:         { cls: 'badge badge-fpoxxx',         label: 'FPoxxx'  },
     freepornvideos: { cls: 'badge badge-freepornvideos', label: 'FPV'     },
+    taboodude:      { cls: 'badge badge-taboodude',      label: 'Taboo'   },
+    hqporner:       { cls: 'badge badge-hqporner',       label: 'HQ'      },
+    fullporn:       { cls: 'badge badge-fullporn',       label: 'FullP'   },
   };
 
   /* ── Source chip selection ───────────────────────────────────────────────── */
@@ -674,7 +686,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
           renderPagination();
           return;
         }
-        hasNextPage = results.length >= 5;
+        hasNextPage = results.length >= 1;
         if (p > maxKnownPage) maxKnownPage = p;
         statusEl.textContent = 'Page ' + (p + 1) + ' \u2014 ' + results.length + ' results';
         results.forEach(function(r) { gridEl.appendChild(makeCard(r)); });
@@ -819,6 +831,9 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     { src: 'xxbrits',        label: 'XXBrits'        },
     { src: 'fpoxxx',         label: 'FPoxxx'         },
     { src: 'freepornvideos', label: 'FreePornVideos' },
+    { src: 'taboodude',      label: 'TabooDude'      },
+    { src: 'hqporner',       label: 'HQPorner'       },
+    { src: 'fullporn',       label: 'FullPorn'       },
   ];
 
   function buildFindOnChips(currentSrc) {
