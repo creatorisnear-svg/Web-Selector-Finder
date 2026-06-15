@@ -911,7 +911,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   /* ── Canvas thumbnail comparison ─────────────────────────────────────────── */
   function compareThumbnails(url1, url2) {
     return new Promise(function(resolve) {
-      var W = 20, H = 11;
+      var W = 48, H = 27; // larger grid → more accurate perceptual comparison
       var canvas = document.createElement('canvas');
       canvas.width = W; canvas.height = H;
       var ctx = canvas.getContext('2d');
@@ -926,24 +926,58 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
         });
       }
 
-      function pixels(img) {
+      function toGray(img) {
         ctx.clearRect(0, 0, W, H);
         ctx.drawImage(img, 0, 0, W, H);
-        return ctx.getImageData(0, 0, W, H).data;
+        var d = ctx.getImageData(0, 0, W, H).data;
+        var g = new Float32Array(W * H);
+        for (var i = 0; i < g.length; i++) g[i] = 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
+        return g;
       }
 
       Promise.all([loadImg(url1), loadImg(url2)])
         .then(function(imgs) {
-          var d1 = pixels(imgs[0]);
-          var d2 = pixels(imgs[1]);
-          var diff = 0;
-          for (var i = 0; i < d1.length; i += 4) {
-            diff += Math.abs(d1[i] - d2[i]) + Math.abs(d1[i+1] - d2[i+1]) + Math.abs(d1[i+2] - d2[i+2]);
+          var g1 = toGray(imgs[0]);
+          var g2 = toGray(imgs[1]);
+          // Pearson correlation — handles brightness/contrast differences between CDNs
+          var n = g1.length, s1 = 0, s2 = 0;
+          for (var i = 0; i < n; i++) { s1 += g1[i]; s2 += g2[i]; }
+          var m1 = s1 / n, m2 = s2 / n;
+          var num = 0, d1 = 0, d2 = 0;
+          for (var j = 0; j < n; j++) {
+            var a = g1[j] - m1, b = g2[j] - m2;
+            num += a * b; d1 += a * a; d2 += b * b;
           }
-          resolve(Math.round((1 - diff / (255 * 3 * W * H)) * 100));
+          var corr = (d1 === 0 || d2 === 0) ? 0 : num / Math.sqrt(d1 * d2);
+          resolve(Math.round(((corr + 1) / 2) * 100)); // map [-1,1] → [0,100]
         })
-        .catch(function() { resolve(null); }); // null = couldn't compare (CORS etc.)
+        .catch(function() { resolve(null); });
     });
+  }
+
+  /* ── Title word-overlap score (0–100) ─────────────────────────────────────── */
+  function titleSimilarity(a, b) {
+    var STOP = new Set(['the','and','for','with','that','this','from','but','all','not','are','was','she','her','his','him','they','video','xxx','sex']);
+    function words(s) {
+      return s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(function(w) { return w.length >= 3 && !STOP.has(w); });
+    }
+    var wa = words(a), wb = new Set(words(b));
+    if (!wa.length) return 0;
+    var hits = wa.filter(function(w) { return wb.has(w); }).length;
+    return Math.round((hits / Math.max(wa.length, wb.size)) * 100);
+  }
+
+  /* ── Build search query for cross-site lookup ─────────────────────────────── */
+  function buildFindQuery(title) {
+    // Try actor extraction first (most specific cross-site signal)
+    var actors = extractActorsAndKeywords(title);
+    if (actors && actors !== extractKeywords(title)) return actors; // actor names found
+
+    // Build a broader keyword query — more words = better recall
+    var STOP = new Set(['the','and','for','with','that','this','from','but','all','not','are','was','she','her','his','him','they','video','xxx','sex','full','hd','hot','big','teen','milf']);
+    var words = title.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+      .filter(function(w) { return w.length >= 3 && !STOP.has(w); });
+    return words.slice(0, 5).join(' ') || title.slice(0, 60);
   }
 
   /* ── Find this video on another site ────────────────────────────────────── */
@@ -962,13 +996,12 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     vpFonStatus.textContent = 'Searching ' + label + '\u2026';
     vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) { c.disabled = true; });
 
-    // Use actor names for a much more targeted cross-site search
-    var searchQ = extractActorsAndKeywords(currentVideoData.title) || currentVideoData.title.slice(0, 60);
+    var searchQ = buildFindQuery(currentVideoData.title);
 
     fetch('/api/search?q=' + _enc(searchQ) + '&source=' + encodeURIComponent(src) + '&page=0')
       .then(function(res) { return res.json(); })
       .then(function(data) {
-        var results = (data.results || []).slice(0, 6); // compare top 6
+        var results = (data.results || []).slice(0, 12); // wider candidate pool
         if (!results.length) {
           vpFonStatus.textContent = 'No results found on ' + label + '.';
           vpFindOn.querySelectorAll('.fon-chip').forEach(function(c) { c.disabled = false; });
@@ -976,29 +1009,42 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
           return;
         }
 
-        vpFonStatus.textContent = 'Comparing thumbnails\u2026';
+        vpFonStatus.textContent = 'Comparing results\u2026';
 
-        // Thumbnail-compare all candidates, pick the best visual match
-        var candidates = results.filter(function(r) { return !!r.thumbnail; });
+        // Pre-score every candidate by title similarity (always available)
+        var titledScored = results.map(function(r) {
+          return { r: r, titleSim: titleSimilarity(currentVideoData.title, r.title), thumbScore: null };
+        });
+
+        // Thumbnail-compare candidates that have thumbnails
+        var candidates = titledScored.filter(function(x) { return !!x.r.thumbnail; });
         if (!candidates.length || !origThumbProxied) {
-          // No thumbnails available — fall back to relevance-first
-          pickAndPlay(results[0], null, src, label);
+          // No thumbnails — pick by title similarity
+          titledScored.sort(function(a, b) { return b.titleSim - a.titleSim; });
+          pickAndPlay(titledScored[0].r, null, src, label);
           return;
         }
 
-        Promise.all(candidates.map(function(r) {
-          return compareThumbnails(origThumbProxied, thumbUrl(r.thumbnail))
-            .then(function(score) { return { r: r, score: score }; });
-        })).then(function(scored) {
-          // Sort by similarity descending; null scores go last
-          scored.sort(function(a, b) {
-            if (a.score === null && b.score === null) return 0;
-            if (a.score === null) return 1;
-            if (b.score === null) return -1;
-            return b.score - a.score;
+        Promise.all(candidates.map(function(x) {
+          return compareThumbnails(origThumbProxied, thumbUrl(x.r.thumbnail))
+            .then(function(score) { x.thumbScore = score; return x; });
+        })).then(function(compared) {
+          // Combined score: 55% thumbnail visual similarity + 45% title word overlap
+          // null thumbScore falls back to title-only ranking
+          compared.forEach(function(x) {
+            x.combined = x.thumbScore !== null
+              ? x.thumbScore * 0.55 + x.titleSim * 0.45
+              : x.titleSim;
           });
-          var best = scored[0];
-          pickAndPlay(best.r, best.score, src, label);
+          // Also include no-thumbnail candidates (title-only scored)
+          var noThumb = titledScored.filter(function(x) { return !x.r.thumbnail; });
+          noThumb.forEach(function(x) { x.combined = x.titleSim; });
+          var all = compared.concat(noThumb);
+          all.sort(function(a, b) { return b.combined - a.combined; });
+          var best = all[0];
+          // Report the thumbnail score if we have one, else report title similarity
+          var displayScore = best.thumbScore !== null ? best.thumbScore : null;
+          pickAndPlay(best.r, displayScore, src, label);
         });
       })
       .catch(function() {
