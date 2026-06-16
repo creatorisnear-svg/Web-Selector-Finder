@@ -599,19 +599,21 @@ async function searchTaboodude(query, page = 0) {
 }
 
 // ── HQPorner scraper ──────────────────────────────────────────────────────────
-// URL: https://www.hqporner.com/hdporn/{page}/q:{query}/  (1-indexed page)
+// Search URL: https://www.hqporner.com/?q={query}  (spaces as +)
+// Pagination:  &p=2, &p=3, ...
 async function searchHqporner(query, page = 0) {
-  const qSlug = encodeURIComponent(query.trim().replace(/\s+/g, '-'));
-  const pageNum = page + 1;
-  const searchUrl = `https://www.hqporner.com/hdporn/${pageNum}/q:${qSlug}/`;
+  const qSlug = query.trim().replace(/\s+/g, '+');
+  const pageParam = page > 0 ? `&p=${page + 1}` : '';
+  const searchUrl = `https://www.hqporner.com/?q=${qSlug}${pageParam}`;
   logger.info(`hqporner search: ${redact(query)} p${page}`);
   try {
     const { data } = await axios.get(searchUrl, {
       headers: {
         'User-Agent': HEADERS['User-Agent'],
-        'Accept': 'text/html',
+        'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.9',
         'Referer': 'https://www.hqporner.com/',
+        'Cookie': 'age_verified=1',
       },
       timeout: 15000,
     });
@@ -619,25 +621,30 @@ async function searchHqporner(query, page = 0) {
     const seen = new Set();
     const results = [];
 
-    // hqporner uses .pcVideoListItem or .video-item wrappers
-    const containers = $('.pcVideoListItem, .video-item, li[class*="item"], article').toArray();
-    for (const el of containers) {
-      if (results.length >= 20) break;
-      const anchor = $(el).find('a[href*="/p/"], a[href*="/video/"], a[href]').first();
+    // Each video lives in a <section class="box feature"> block
+    $('section.box.feature').each((_, el) => {
+      if (results.length >= 20) return;
+      // Primary link: the thumbnail anchor or any /hdporn/ link
+      const anchor = $(el).find('a[href*="/hdporn/"]').first();
       const rawUrl = anchor.attr('href') || '';
-      if (!rawUrl || seen.has(rawUrl)) continue;
+      if (!rawUrl || seen.has(rawUrl)) return;
+      if (rawUrl === '/' || rawUrl.length < 5) return;
       seen.add(rawUrl);
       const url = rawUrl.startsWith('http') ? rawUrl : `https://www.hqporner.com${rawUrl}`;
 
+      // Title: prefer the h3 link text
       const title = (
+        $(el).find('h3.meta-data-title a').first().text() ||
         anchor.attr('title') ||
-        $(el).find('.hd-thumbnail span, .title, h3, h4').first().text() ||
-        $(el).find('img').attr('alt') || ''
+        $(el).find('img').first().attr('alt') || ''
       ).replace(/\s+/g, ' ').trim();
-      if (!title || title.length < 4) continue;
+      if (!title || title.length < 4) return;
 
-      const durText = $(el).find('.duration, span[class*="duration"], .videoduration').first().text().trim();
-      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+      // Duration: "38m 52s" format from fa-clock-o span
+      const durText = $(el).find('span[class*="fa-clock"]').first().text().replace(/\s+/g, ' ').trim();
+      // Thumbnail: the img with id^="cover_"
+      const imgEl = $(el).find('img[id^="cover_"], img[src*="fastporndelivery"]').first();
+      const thumbnail = extractThumbnail(imgEl.length ? imgEl : $(el).find('img').first(), $, searchUrl);
 
       results.push({
         title: title.length > 80 ? title.slice(0, 77) + '...' : title,
@@ -645,17 +652,18 @@ async function searchHqporner(query, page = 0) {
         duration: durText || null,
         thumbnail,
       });
-    }
+    });
 
-    // Fallback — scrape <a href="/p/..."> links directly
+    // Fallback — scrape /hdporn/ links directly
     if (results.length === 0) {
-      $('a[href]').each((_, el) => {
+      $('a[href*="/hdporn/"]').each((_, el) => {
         if (results.length >= 20) return;
         const href = $(el).attr('href') || '';
-        if (!href || seen.has(href) || !/\/p\/|\/video\//i.test(href)) return;
+        if (!href || seen.has(href) || !/\/hdporn\/\d/.test(href)) return;
         seen.add(href);
         const url = href.startsWith('http') ? href : `https://www.hqporner.com${href}`;
-        const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text()).replace(/\s+/g, ' ').trim();
+        const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text())
+          .replace(/\s+/g, ' ').trim();
         if (!title || title.length < 4) return;
         const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
         results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration: null, thumbnail });
@@ -803,11 +811,20 @@ async function searchFreepornvideos(query, page = 0) {
 function parseDurSecs(dur) {
   if (!dur) return 0;
   const s = dur.trim();
-  const parts = s.split(':').map(p => parseInt(p, 10));
-  if (parts.some(isNaN)) return 0;
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return parts[0] * 60; // bare number treated as minutes
+  // Colon-separated: "1:20:10" or "38:52"
+  if (/^\d+:\d+/.test(s)) {
+    const parts = s.split(':').map(p => parseInt(p, 10));
+    if (parts.some(isNaN)) return 0;
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return parts[0] * 60;
+  }
+  // Verbose: "38m 52s", "1h 20m", "45s", etc.
+  let secs = 0;
+  const h = s.match(/(\d+)\s*h/i); if (h) secs += parseInt(h[1], 10) * 3600;
+  const m = s.match(/(\d+)\s*m/i); if (m) secs += parseInt(m[1], 10) * 60;
+  const sc = s.match(/(\d+)\s*s/i); if (sc) secs += parseInt(sc[1], 10);
+  return secs;
 }
 
 // Normalize title for duplicate detection: lowercase, strip non-alphanumeric.
