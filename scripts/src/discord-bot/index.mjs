@@ -54,8 +54,8 @@ const PROXY_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.5',
   'Cookie': 'age_verified=1; ageGate=true; confirm=1',
 };
-const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com', 'media.xxbrits.com', 'fpo.xxx', 'freepornvideos.xxx', 'taboodude.com', 'hqporner.com', 'fullporn.xxx'];
-const THUMB_HOSTS = [...ALLOWED_HOSTS, 'img.xvideos.com', 'img-cdn.xvideos-cdn.com', 'thumb.xnxx.com', 'img.xnxx-cdn.com', 'img.xxbrits.com', 'cdn.fpo.xxx', 'img.fpo.xxx', 'cdn.freepornvideos.xxx', 'img.freepornvideos.xxx', 'static.freepornvideos.xxx', 'cdn.taboodude.com', 'img.taboodude.com', 'static.taboodude.com', 'cdn.hqporner.com', 'img.hqporner.com', 'thumb.hqporner.com', 'cdn.fullporn.xxx', 'img.fullporn.xxx'];
+const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com', 'media.xxbrits.com', 'fpo.xxx', 'freepornvideos.xxx', 'taboodude.com', 'hqporner.com', 'fullporn.xxx', 'tiava.com', 'tiavasex.com'];
+const THUMB_HOSTS = [...ALLOWED_HOSTS, 'img.xvideos.com', 'img-cdn.xvideos-cdn.com', 'thumb.xnxx.com', 'img.xnxx-cdn.com', 'img.xxbrits.com', 'cdn.fpo.xxx', 'img.fpo.xxx', 'cdn.freepornvideos.xxx', 'img.freepornvideos.xxx', 'static.freepornvideos.xxx', 'cdn.taboodude.com', 'img.taboodude.com', 'static.taboodude.com', 'cdn.hqporner.com', 'img.hqporner.com', 'thumb.hqporner.com', 'cdn.fullporn.xxx', 'img.fullporn.xxx', 'cdn.tiava.com', 'img.tiava.com', 'thumb.tiava.com', 'static.tiavasex.com'];
 
 function isAllowedUrl(raw) {
   try { return ALLOWED_HOSTS.some(h => new URL(raw).hostname.endsWith(h)); } catch { return false; }
@@ -403,10 +403,11 @@ const healthServer = http.createServer(async (req, res) => {
     const BASE = process.env.STREAM_BASE_URL;
     try {
       const stream = await getVideoStreamUrl(videoPageUrl);
+      const description = stream?.description || '';
       if (stream?.url && BASE) {
         const playUrl = `${BASE}/api/stream/play/video.mp4?url=${encodeURIComponent(stream.url)}&ref=${encodeURIComponent(videoPageUrl)}`;
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ playUrl }));
+        res.end(JSON.stringify({ playUrl, description }));
         return;
       }
       // Fallback: try yt-dlp direct URL
@@ -417,14 +418,14 @@ const healthServer = http.createServer(async (req, res) => {
       if (directUrl && BASE) {
         const playUrl = `${BASE}/api/stream/play/video.mp4?url=${encodeURIComponent(directUrl)}&ref=${encodeURIComponent(videoPageUrl)}`;
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ playUrl }));
+        res.end(JSON.stringify({ playUrl, description }));
         return;
       }
       // No BASE URL configured — return direct CDN URL as-is
       const cdnUrl = (stream?.url && !stream.isHls) ? stream.url : (directUrl || null);
       if (cdnUrl) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ playUrl: cdnUrl }));
+        res.end(JSON.stringify({ playUrl: cdnUrl, description }));
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -625,7 +626,7 @@ process.on('uncaughtException', (err) => {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const PAGE_SIZE = 5;
-const SOURCE_LABELS = { pornhub: 'PH', xvideos: 'XV', xnxx: 'XNXX', xxbrits: 'XXBrits', fpoxxx: 'FPoxxx', freepornvideos: 'FPV', taboodude: 'Taboo', hqporner: 'HQ', fullporn: 'FullP' };
+const SOURCE_LABELS = { pornhub: 'PH', xvideos: 'XV', xnxx: 'XNXX', xxbrits: 'XXBrits', fpoxxx: 'FPoxxx', freepornvideos: 'FPV', taboodude: 'Taboo', hqporner: 'HQ', fullporn: 'FullP', tiava: 'Tiava' };
 const YTDLP_TIMEOUT_MS = 12000;
 
 // ── Build ephemeral results page ──────────────────────────────────────────────

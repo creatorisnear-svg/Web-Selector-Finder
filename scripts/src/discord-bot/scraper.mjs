@@ -873,6 +873,90 @@ function dedupByThumbnail(results) {
   return output;
 }
 
+// ── Duration gate (must be >= 10 min or unknown) ─────────────────────────────
+function isLongEnough(r) {
+  if (!r.duration) return true;
+  const secs = parseDurSecs(r.duration);
+  if (secs === 0) return true;
+  return secs >= 600;
+}
+
+// ── Tiava scraper ─────────────────────────────────────────────────────────────
+// NOTE: Tiava is an aggregator — video pages often redirect to xvideos/youporn
+// etc. axios follows redirects, so stream extraction still works; the video
+// simply plays from whichever host it redirects to.
+async function searchTiava(query, page = 0) {
+  const qSlug = encodeURIComponent(query.trim().replace(/\s+/g, '+'));
+  const pageParam = page > 0 ? `/page/${page + 1}` : '';
+  const searchUrl = `https://www.tiava.com/search/a/${qSlug}${pageParam}`;
+  logger.info(`tiava search: ${redact(query)} p${page}`);
+  try {
+    const { data } = await axios.get(searchUrl, {
+      headers: {
+        'User-Agent': HEADERS['User-Agent'],
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cookie': 'age_verified=1',
+      },
+      timeout: 15000,
+    });
+    const $ = cheerio.load(data);
+    const seen = new Set();
+    const results = [];
+
+    // Try structured containers first
+    const containers = $(
+      '.thumb-item, .video-item, .item, .thumb, article[class*="video"], [class*="video-card"], [class*="thumb_item"]'
+    ).toArray();
+
+    for (const el of containers) {
+      if (results.length >= 20) break;
+      const anchor = $(el).find('a[href]').first();
+      const rawUrl = anchor.attr('href') || '';
+      if (!rawUrl || seen.has(rawUrl)) continue;
+      if (/\/(search|category|tag|user|page|login|signup|account)\//i.test(rawUrl)) continue;
+      seen.add(rawUrl);
+      const url = rawUrl.startsWith('http') ? rawUrl : `https://www.tiava.com${rawUrl}`;
+      const title = (
+        anchor.attr('title') ||
+        $(el).find('.title, .video-title, h3, h4').first().text() ||
+        $(el).find('img').first().attr('alt') || ''
+      ).replace(/\s+/g, ' ').trim();
+      if (!title || title.length < 4) continue;
+      const durText = $(el).find('.duration, .dur, span[class*="duration"]').first().text().trim();
+      const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+      results.push({
+        title: title.length > 80 ? title.slice(0, 77) + '...' : title,
+        url, duration: durText || null, thumbnail,
+      });
+    }
+
+    // Fallback: scrape any link that looks like a video page
+    if (results.length === 0) {
+      $('a[href]').each((_, el) => {
+        if (results.length >= 20) return;
+        const href = $(el).attr('href') || '';
+        if (!href || seen.has(href)) return;
+        if (/\/(search|category|tag|user|page|login|signup|account)\//i.test(href)) return;
+        if (!/\/(tiavia|video|videos|watch|embed|\d{4,})/i.test(href)) return;
+        seen.add(href);
+        const url = href.startsWith('http') ? href : `https://www.tiava.com${href}`;
+        const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text())
+          .replace(/\s+/g, ' ').trim();
+        if (!title || title.length < 4) return;
+        const thumbnail = extractThumbnail($(el).find('img').first(), $, searchUrl);
+        results.push({ title: title.length > 80 ? title.slice(0, 77) + '...' : title, url, duration: null, thumbnail });
+      });
+    }
+
+    logger.info(`tiava search returned ${results.length} results`);
+    return results;
+  } catch (err) {
+    logger.error(`tiava search failed: ${err.message}`);
+    return [];
+  }
+}
+
 // ── Public search entry point ─────────────────────────────────────────────────
 // Searches all sites in parallel and interleaves results. `page` is 0-indexed.
 // Pass `source` to restrict to one site.
@@ -883,6 +967,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
       pornhub: searchPornhub, xvideos: searchXvideos, xnxx: searchXnxx,
       xxbrits: searchXxbrits, fpoxxx: searchFpoxxx, freepornvideos: searchFreepornvideos,
       taboodude: searchTaboodude, hqporner: searchHqporner, fullporn: searchFullporn,
+      tiava: searchTiava,
     };
     const fn = scrapers[source];
     if (fn) {
@@ -890,11 +975,11 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
       const words = queryGroups(query);
       const tagged = results.map(r => ({ ...r, source }));
       logger.info(`Single-source "${source}" search ${redact(query)} p${page}: ${results.length} results`);
-      return sortByRelevance(tagged, words);
+      return sortByRelevance(tagged, words).filter(isLongEnough);
     }
   }
 
-  const [ph, xv, xn, xb, fp, fpv, td, hq, fullp] = await Promise.all([
+  const [ph, xv, xn, xb, fp, fpv, td, hq, fullp, tiava] = await Promise.all([
     searchPornhub(query, page).catch(e => { logger.warn(`pornhub failed: ${e.message}`); return []; }),
     searchXvideos(query, page).catch(e => { logger.warn(`xvideos failed: ${e.message}`); return []; }),
     searchXnxx(query, page).catch(e => { logger.warn(`xnxx failed: ${e.message}`); return []; }),
@@ -904,6 +989,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     searchTaboodude(query, page).catch(e => { logger.warn(`taboodude failed: ${e.message}`); return []; }),
     searchHqporner(query, page).catch(e => { logger.warn(`hqporner failed: ${e.message}`); return []; }),
     searchFullporn(query, page).catch(e => { logger.warn(`fullporn failed: ${e.message}`); return []; }),
+    searchTiava(query, page).catch(e => { logger.warn(`tiava failed: ${e.message}`); return []; }),
   ]);
 
   // Tag each result with its source
@@ -912,6 +998,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     tag(ph, 'pornhub'), tag(xv, 'xvideos'), tag(xn, 'xnxx'),
     tag(xb, 'xxbrits'), tag(fp, 'fpoxxx'), tag(fpv, 'freepornvideos'),
     tag(td, 'taboodude'), tag(hq, 'hqporner'), tag(fullp, 'fullporn'),
+    tag(tiava, 'tiava'),
   ];
 
   // Round-robin interleave so results from all sites appear on every page
@@ -934,9 +1021,9 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
 
   // Score and sort: higher relevance first, zero-matches dropped for specific queries
   const words = queryGroups(query);
-  const final = sortByRelevance(deduped, words);
+  const final = sortByRelevance(deduped, words).filter(isLongEnough);
 
-  logger.info(`Combined search ${redact(query)} p${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} td=${td.length} hq=${hq.length} fullp=${fullp.length} → ${final.length} (after dedup+score)`);
+  logger.info(`Combined search ${redact(query)} p${page}: ph=${ph.length} xv=${xv.length} xn=${xn.length} xb=${xb.length} fp=${fp.length} fpv=${fpv.length} td=${td.length} hq=${hq.length} fullp=${fullp.length} tiava=${tiava.length} → ${final.length} (after dedup+score+duration)`);
   return final;
 }
 
@@ -1012,6 +1099,10 @@ export async function getVideoStreamUrl(videoPageUrl) {
   ].join('; ');
 
   const $ = cheerio.load(res.data);
+  const description = (
+    $('meta[property="og:description"]').attr('content') ||
+    $('meta[name="description"]').attr('content') || ''
+  ).replace(/\s+/g, ' ').trim().slice(0, 400);
   const allScripts = $('script').map((_, el) => $(el).html() || '').get().join('\n');
 
   // 1. <source> or <video> tags
@@ -1019,7 +1110,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
     const src = $(el).attr('src') || '';
     if (src.includes('.mp4') || src.includes('.webm')) {
       logger.info('Found direct video/source tag');
-      return { url: resolveUrl(src, videoPageUrl), isHls: false, cookies: sessionCookies };
+      return { url: resolveUrl(src, videoPageUrl), isHls: false, cookies: sessionCookies, description };
     }
   }
 
@@ -1029,7 +1120,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
     $('meta[property="og:video"]').attr('content');
   if (ogVideo && (ogVideo.includes('.mp4') || ogVideo.includes('.webm')) && !ogVideo.includes('.m3u8')) {
     logger.info('Found og:video meta tag');
-    return { url: ogVideo, isHls: false, cookies: sessionCookies };
+    return { url: ogVideo, isHls: false, cookies: sessionCookies, description };
   }
 
   // 3. PH flashvars / get_media API
@@ -1055,7 +1146,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
           const best = mediaDefs[0];
           const url = unescapeUrl(best.videoUrl);
           logger.info(`get_media: ${best.height}p mp4: ${url.slice(0, 80)}`);
-          return { url, isHls: false, cookies: sessionCookies };
+          return { url, isHls: false, cookies: sessionCookies, description };
         }
       }
 
@@ -1075,7 +1166,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
       if (hlsDefs.length > 0) {
         const url = unescapeUrl(hlsDefs[0].videoUrl);
         logger.info(`HLS fallback ${hlsDefs[0].quality}: ${redactUrl(url)}`);
-        return { url, isHls: true, cookies: sessionCookies };
+        return { url, isHls: true, cookies: sessionCookies, description };
       }
     } catch (e) {
       logger.error('Flashvars parse error:', e.message);
@@ -1089,7 +1180,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
     const raw = unescapeUrl(vuMatch[1]);
     if (raw.includes('.mp4') || raw.includes('.m3u8')) {
       logger.info('Found videoUrl in script JSON');
-      return { url: raw, isHls: raw.includes('.m3u8'), cookies: sessionCookies };
+      return { url: raw, isHls: raw.includes('.m3u8'), cookies: sessionCookies, description };
     }
   }
 
@@ -1100,12 +1191,12 @@ export async function getVideoStreamUrl(videoPageUrl) {
   const ktMatch = allScripts.match(/video_url\s*:\s*['"]([^'"]+\.mp4\/?\?[^'"]+)['"]/);
   if (ktMatch) {
     logger.info('Found kt_player video_url (480p)');
-    return { url: ktMatch[1], isHls: false, cookies: sessionCookies };
+    return { url: ktMatch[1], isHls: false, cookies: sessionCookies, description };
   }
   const ktAltMatch = allScripts.match(/video_alt_url\s*:\s*['"]([^'"]+\.mp4\/?\?[^'"]+)['"]/);
   if (ktAltMatch) {
     logger.info('Found kt_player video_alt_url (HD fallback)');
-    return { url: ktAltMatch[1], isHls: false, cookies: sessionCookies };
+    return { url: ktAltMatch[1], isHls: false, cookies: sessionCookies, description };
   }
 
   // 5. xvideos direct MP4 via html5player.setVideoUrlHigh / setVideoUrlLow
@@ -1115,7 +1206,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
     const resolved = resolveUrl(mp4Url, videoPageUrl);
     if (resolved) {
       logger.info(`Found xvideos direct MP4 URL: ${redactUrl(resolved)}`);
-      return { url: resolved, isHls: false, cookies: sessionCookies };
+      return { url: resolved, isHls: false, cookies: sessionCookies, description };
     }
   }
 
@@ -1124,7 +1215,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
   if (xvHlsMatch) {
     const hlsUrl = unescapeUrl(xvHlsMatch[1]);
     logger.info(`Found xvideos HLS URL: ${redactUrl(hlsUrl)}`);
-    return { url: hlsUrl, isHls: true, cookies: sessionCookies };
+    return { url: hlsUrl, isHls: true, cookies: sessionCookies, description };
   }
 
   // 6. Plain .mp4 URLs in scripts
@@ -1138,7 +1229,7 @@ export async function getVideoStreamUrl(videoPageUrl) {
       continue;
     }
     logger.info('Found plain .mp4 URL in script');
-    return { url: match, isHls: false, cookies: sessionCookies };
+    return { url: match, isHls: false, cookies: sessionCookies, description };
   }
 
   logger.warn('No video stream found on page');

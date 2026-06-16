@@ -134,6 +134,9 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .badge-taboodude { background: #c0392b; color: #fff; }
 .badge-hqporner  { background: #27ae60; color: #fff; }
 .badge-fullporn  { background: #d35400; color: #fff; }
+.badge-tiava     { background: #8e44ad; color: #fff; }
+.chip-tiava.active { background: #8e44ad; border-color: #8e44ad; color: #fff; }
+.vp-desc { font-size: .8rem; color: var(--muted); line-height: 1.55; margin-top: .4rem; margin-bottom: .3rem; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .card-actors { font-size: .68rem; color: var(--muted); margin-top: .2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Skeleton loading ─────────────────────────────────────────────────────── */
@@ -385,6 +388,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     <button class="chip chip-taboodude"       data-src="taboodude">TabooDude</button>
     <button class="chip chip-hqporner"        data-src="hqporner">HQPorner</button>
     <button class="chip chip-fullporn"        data-src="fullporn">FullPorn</button>
+    <button class="chip chip-tiava"           data-src="tiava">Tiava</button>
   </div>
 </div>
 
@@ -414,6 +418,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
       <div class="vp-info">
         <h2 id="vp-title"></h2>
         <div class="vp-actors" id="vp-actors" style="display:none"></div>
+        <div class="vp-desc"   id="vp-desc"   style="display:none"></div>
         <div class="vp-info-meta">
           <span id="vp-badge"></span>
           <a id="vp-link" href="#" target="_blank" rel="noopener noreferrer" class="ext-link" title="⚠️ Opens the original site directly — your IP will be visible to that site">Open source page &#x2197; <span class="ext-warn">IP exposed</span></a>
@@ -523,6 +528,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   var isFetching      = false;
   var currentVideoData = null; // video currently shown in video page
   var fonFetching     = false; // guard against double-clicks on find-on chips
+  var seenUrls        = new Set(); // cross-page dedup — reset on new search or source change
 
   var BADGE = {
     pornhub:        { cls: 'badge badge-pornhub',        label: 'PH'      },
@@ -534,6 +540,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     taboodude:      { cls: 'badge badge-taboodude',      label: 'Taboo'   },
     hqporner:       { cls: 'badge badge-hqporner',       label: 'HQ'      },
     fullporn:       { cls: 'badge badge-fullporn',       label: 'FullP'   },
+    tiava:          { cls: 'badge badge-tiava',          label: 'Tiava'   },
   };
 
   /* ── Source chip selection ───────────────────────────────────────────────── */
@@ -544,7 +551,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     btn.classList.add('active');
     currentSource = btn.dataset.src;
     if (currentQuery) {
-      currentPage = 0; maxKnownPage = 0; hasNextPage = false;
+      currentPage = 0; maxKnownPage = 0; hasNextPage = false; seenUrls = new Set();
       fetchPage(0);
     }
   });
@@ -643,7 +650,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     if (!q) return;
     if (typeof overrideQ === 'string') { qEl.value = q; closeVideoPage(); }
     closeAC();
-    currentQuery = q; currentPage = 0; maxKnownPage = 0; hasNextPage = false;
+    currentQuery = q; currentPage = 0; maxKnownPage = 0; hasNextPage = false; seenUrls = new Set();
     trendHead.style.display = 'none';
     fetchPage(0);
   }
@@ -674,21 +681,23 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
         isFetching = false;
         searchBtn.disabled = false;
         pageLoadBar.classList.remove('active');
-        var results = data.results || [];
+        var rawResults = data.results || [];
+        var results = rawResults.filter(function(r) { return !seenUrls.has(r.url); });
+        rawResults.forEach(function(r) { seenUrls.add(r.url); });
         gridEl.innerHTML = '';
-        if (results.length === 0 && p === 0) {
+        if (rawResults.length === 0 && p === 0) {
           statusEl.textContent = 'No results found. Try a different search.';
           return;
         }
-        if (results.length === 0) {
+        if (rawResults.length === 0) {
           statusEl.textContent = 'No more results.';
           currentPage = maxKnownPage;
           renderPagination();
           return;
         }
-        hasNextPage = results.length >= 1;
+        hasNextPage = rawResults.length >= 1;
         if (p > maxKnownPage) maxKnownPage = p;
-        statusEl.textContent = 'Page ' + (p + 1) + ' \u2014 ' + results.length + ' results';
+        statusEl.textContent = 'Page ' + (p + 1) + ' \u2014 ' + results.length + ' result' + (results.length !== 1 ? 's' : '');
         results.forEach(function(r) { gridEl.appendChild(makeCard(r)); });
         renderPagination();
       })
@@ -834,6 +843,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     { src: 'taboodude',      label: 'TabooDude'      },
     { src: 'hqporner',       label: 'HQPorner'       },
     { src: 'fullporn',       label: 'FullPorn'       },
+    { src: 'tiava',          label: 'Tiava'          },
   ];
 
   function buildFindOnChips(currentSrc) {
@@ -857,6 +867,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   }
 
   var vpActors = document.getElementById('vp-actors');
+  var vpDesc   = document.getElementById('vp-desc');
 
   function openVideoPage(r) {
     currentVideoData = r;
@@ -878,6 +889,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     } else {
       vpActors.style.display = 'none';
     }
+    vpDesc.style.display = 'none';
     vpVid.style.display    = 'none';
     vpVidStatus.style.display = 'flex';
     vpVidStatus.innerHTML  = '<div class="spinner"></div><span>Loading video\u2026</span>';
@@ -899,6 +911,10 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
           vpVid.style.display = 'block';
           vpVidStatus.style.display = 'none';
           vpVid.play().catch(function() {});
+          if (data.description) {
+            vpDesc.textContent = data.description;
+            vpDesc.style.display = 'block';
+          }
         } else {
           vpVidStatus.innerHTML = '<span>Could not load. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
         }
