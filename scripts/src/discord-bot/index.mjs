@@ -403,8 +403,9 @@ const healthServer = http.createServer(async (req, res) => {
   // ── Trending videos ────────────────────────────────────────────────────────
   if (path === '/api/trending') {
     res.setHeader('Access-Control-Allow-Origin', '*');
+    const page = Math.min(500, Math.max(0, parseInt(new URL(req.url, 'http://localhost').searchParams.get('page') || '0', 10) || 0));
     try {
-      const results = await getTrending();
+      const results = await getTrending(page);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ results }));
     } catch (err) {

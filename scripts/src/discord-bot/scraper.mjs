@@ -103,7 +103,7 @@ async function searchPornhub(query, page = 0) {
 
   // 2. Fallback: xvideos search — not Cloudflare-gated, large library, yt-dlp can download
   logger.info('Falling back to xvideos search');
-  return searchXvideos(query);
+  return searchXvideos(query, page);
 }
 
 async function searchXvideos(query, page = 0) {
@@ -205,89 +205,100 @@ function scrapeGeneric($, pageUrl) {
 }
 
 // ── Relevance filtering ───────────────────────────────────────────────────────
-// Removes spaces/hyphens so "step mom" == "stepmom" and "step-mom" == "stepmom".
-function normalize(s) {
-  return s.toLowerCase().replace(/[\s\-_]+/g, '');
+// Whole-word matching, so "son" does not match "Jason" or "lesson". Family
+// compounds match their split and synonym spellings: "stepmom" == "step mom" ==
+// "step-mom" == "stepmother". Plurals match their singular.
+const COMPOUND_PARTS = new Set(['step', 'mom', 'mum', 'mother', 'dad', 'father', 'son', 'daughter', 'sister', 'sis', 'brother', 'bro']);
+const PART_SYNONYMS = {
+  mom: ['mother', 'mum'], mum: ['mom', 'mother'], mother: ['mom', 'mum'],
+  dad: ['father'], father: ['dad'], sis: ['sister'], sister: ['sis'], bro: ['brother'], brother: ['bro'],
+};
+const QUERY_STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'but', 'all', 'not', 'are', 'was']);
+
+function tokenize(s) {
+  return s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
 }
 
-// Breaks a compound word into its component parts for fuzzy matching.
-// "stepmom" → ["stepmom", "step", "mom", "stepmother", "mother"]
-// "stepson" → ["stepson", "step", "son"]
-const FAMILY_BREAKS = ['step','mom','dad','son','daughter','mother','father','sister','brother','bro','sis','milf'];
-const FAMILY_SYNONYMS = { mom: ['mom','mother','mum'], dad: ['dad','father'], sis: ['sis','sister'], bro: ['bro','brother'] };
-function wordVariants(token) {
-  const variants = new Set([token]);
-  for (const prefix of FAMILY_BREAKS) {
-    if (token.startsWith(prefix) && token !== prefix) {
-      variants.add(prefix);
-      const rest = token.slice(prefix.length);
-      if (rest.length >= 3) variants.add(rest);
-      // Also add synonym forms e.g. "stepmom" → "stepmother"
-      const syns = FAMILY_SYNONYMS[prefix] || [];
-      for (const syn of syns) {
-        variants.add(token.replace(prefix, syn));
-        variants.add(syn);
-      }
-      break;
-    }
-    // suffix break: "stepmom" ends with "mom" → already handled by prefix above
+// "stepmom" -> ["step", "mom"]; null unless the word is exactly two known parts.
+function splitCompound(word) {
+  for (let i = 3; i <= word.length - 3; i++) {
+    const a = word.slice(0, i), b = word.slice(i);
+    if (COMPOUND_PARTS.has(a) && COMPOUND_PARTS.has(b)) return [a, b];
   }
-  return [...variants];
+  return null;
 }
 
-// Returns an array of concept groups. Each group is a list of word variants
-// that all count as a match for that ONE query concept.
-// "stepmom stepson threesome" →
-//   [ ["stepmom","step","mom","stepmother","mother"],
-//     ["stepson","step","son"],
-//     ["threesome"] ]
-// Scoring: matched_groups / total_groups  →  no token inflation.
+function sameWord(a, b) {
+  return a === b || a === b + 's' || b === a + 's' || a === b + 'es' || b === a + 'es';
+}
+
+function withSynonyms(word) {
+  return [word, ...(PART_SYNONYMS[word] || [])];
+}
+
+// One group per distinct query word: spellings that fully match it, plus the
+// compound's meaningful parts, which earn half credit ("mom" alone for "stepmom").
 function queryGroups(query) {
-  const STOP = new Set(['the','and','for','with','that','this','from','but','all','not','are','was']);
-  const base = query.toLowerCase().split(/\W+/).filter(w => w.length >= 3 && !STOP.has(w));
-  return [...new Set(base)].map(w => wordVariants(w));
+  const words = [...new Set(tokenize(query).filter(w => w.length >= 3 && !QUERY_STOP.has(w)))];
+  return words.map(word => {
+    const parts = splitCompound(word);
+    const full = new Set(withSynonyms(word));
+    if (parts) for (const b of withSynonyms(parts[1])) full.add(parts[0] + b);
+    const partial = parts ? parts.filter(p => p !== 'step').flatMap(withSynonyms) : [];
+    return { full: [...full], partial };
+  });
 }
 
-// Legacy flat token list — still used by sortByRelevance signature kept below.
-function queryTokens(query) {
-  return queryGroups(query).flat();
-}
-
-// Returns a relevance score [0, 1] — fraction of CONCEPTS (not raw tokens) matched.
-// e.g. query "stepmom stepson threesome" (3 concepts), title "step mom" →
-//   concept "stepmom" → title contains "stepmom"/"step"/"mom" → YES
-//   concept "stepson" → title contains "stepson"/"son" → NO
-//   concept "threesome" → NO   →  1/3 ≈ 0.33
-function relevanceScore(title, groups) {
-  if (!groups.length) return 1;
-  // Accept both flat arrays (legacy) and arrays-of-arrays (new groups)
-  const isGrouped = Array.isArray(groups[0]);
-  const normTitle = normalize(title);
-  if (isGrouped) {
-    const matched = groups.filter(g => g.some(w => normTitle.includes(normalize(w)))).length;
-    return matched / groups.length;
+function textHas(tokens, parts, word) {
+  for (let i = 0; i < tokens.length; i++) {
+    if (sameWord(tokens[i], word)) return true;
+    if (i + 1 < tokens.length && sameWord(tokens[i] + tokens[i + 1], word)) return true;
   }
-  // Legacy flat path
-  const matched = groups.filter(w => normTitle.includes(normalize(w))).length;
-  return matched / groups.length;
+  return parts.some(p => sameWord(p, word));
 }
 
-// Kept for single-word / general queries where any match counts.
-function isRelevant(title, groups) {
-  return relevanceScore(title, groups) > 0;
+// Score in [0, 1]: the average over query words of 1 (full match), 0.5 (partial) or 0.
+function relevanceScore(text, groups) {
+  if (!groups.length) return 1;
+  const tokens = tokenize(text);
+  const parts = tokens.flatMap(t => splitCompound(t) || []);
+  let total = 0;
+  for (const g of groups) {
+    if (g.full.some(w => textHas(tokens, parts, w))) total += 1;
+    else if (g.partial.some(w => textHas(tokens, parts, w))) total += 0.5;
+  }
+  return total / groups.length;
 }
 
-// Sort results by relevance score (descending), preserving site-interleave order
-// within equal-score groups. For specific queries (2+ concepts) zero-score results
-// are dropped. For general/short queries they're kept as a fallback.
-function sortByRelevance(results, queryWordsOrGroups) {
-  const groups = queryWordsOrGroups;
-  const isSpecific = groups.length >= 2;
-  const scored = results.map(r => ({ ...r, _score: relevanceScore(r.title, groups) }));
-  const filtered = isSpecific ? scored.filter(r => r._score > 0) : scored;
-  // Stable sort: higher score first; ties preserve round-robin interleave order
-  filtered.sort((a, b) => b._score - a._score);
-  return filtered.map(({ _score, ...r }) => r); // strip internal _score field
+// Highest score first; ties keep the site-interleave order. Multi-word queries
+// drop results that match none of the words; single-word queries keep them since
+// sites also match on tags the title does not show.
+function sortByRelevance(results, groups) {
+  const scored = results.map(r => ({ r, score: relevanceScore([r.title, ...(r.actors || [])].join(' '), groups) }));
+  const kept = groups.length >= 2 ? scored.filter(x => x.score > 0) : scored;
+  kept.sort((a, b) => b.score - a.score);
+  return kept.map(x => x.r);
+}
+
+// ── Source detection ──────────────────────────────────────────────────────────
+// Label results by the host they actually link to, not by which scraper found
+// them (the PornHub scraper falls back to xvideos when PH blocks the API).
+const SOURCE_HOSTS = [
+  ['pornhub.com', 'pornhub'], ['xvideos.com', 'xvideos'], ['xvideos2.com', 'xvideos'],
+  ['xnxx.com', 'xnxx'], ['xxbrits.com', 'xxbrits'], ['fpo.xxx', 'fpoxxx'],
+  ['freepornvideos.xxx', 'freepornvideos'], ['taboodude.com', 'taboodude'],
+  ['hqporner.com', 'hqporner'], ['fullporn.xxx', 'fullporn'],
+  ['tiava.com', 'tiava'], ['tiavasex.com', 'tiava'],
+];
+
+function sourceFromUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    const hit = SOURCE_HOSTS.find(([h]) => host === h || host.endsWith('.' + h));
+    return hit ? hit[1] : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── XNXX scraper ─────────────────────────────────────────────────────────────
@@ -990,8 +1001,10 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
     if (fn) {
       const results = await fn(query, page).catch(e => { logger.warn(`${source} failed: ${e.message}`); return []; });
       const words = queryGroups(query);
-      const tagged = results.map(r => ({ ...r, source }));
-      logger.info(`Single-source "${source}" search ${redact(query)} p${page}: ${results.length} results`);
+      const tagged = results
+        .map(r => ({ ...r, source: sourceFromUrl(r.url) || source }))
+        .filter(r => r.source === source);
+      logger.info(`Single-source "${source}" search ${redact(query)} p${page}: ${results.length} results, ${tagged.length} on-site`);
       return sortByRelevance(tagged, words).filter(isLongEnough);
     }
   }
@@ -1010,7 +1023,7 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
   ]);
 
   // Tag each result with its source
-  const tag = (arr, src) => arr.map(r => ({ ...r, source: src }));
+  const tag = (arr, src) => arr.map(r => ({ ...r, source: sourceFromUrl(r.url) || src }));
   const tagged = [
     tag(ph, 'pornhub'), tag(xv, 'xvideos'), tag(xn, 'xnxx'),
     tag(xb, 'xxbrits'), tag(fp, 'fpoxxx'), tag(fpv, 'freepornvideos'),
@@ -1045,15 +1058,25 @@ export async function searchVideos(_searchUrlTemplate, query, page = 0, source =
 }
 
 // ── Trending videos (PH most viewed this week) ────────────────────────────────
-export async function getTrending() {
+// `page` is 0-indexed. If the weekly chart runs out, keep the feed going with
+// the monthly and then all-time charts (the page dedups repeats).
+export async function getTrending(page = 0) {
+  for (const period of ['weekly', 'monthly', 'alltime']) {
+    const results = await getTrendingPeriod(page, period);
+    if (results.length || page === 0) return results;
+  }
+  return [];
+}
+
+async function getTrendingPeriod(page, period) {
   try {
-    const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=&page=1&per_page=32&ordering=mostviewed&period=weekly`;
+    const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=&page=${page + 1}&per_page=32&ordering=mostviewed&period=${period}`;
     const res = await axios.get(apiUrl, {
       headers: { 'Accept': 'application/json', 'User-Agent': HEADERS['User-Agent'] },
       timeout: 15000,
     });
     const videos = (typeof res.data === 'object' && Array.isArray(res.data.videos)) ? res.data.videos : [];
-    logger.info(`Trending: ${videos.length} videos from PH`);
+    logger.info(`Trending ${period} p${page}: ${videos.length} videos from PH`);
     return videos.filter(v => v.url && v.title).map(v => {
       let duration = null;
       if (v.duration) {
