@@ -85,8 +85,8 @@ function parseMasterPlaylist(text: string, baseUrl: string): string | null {
     }
   }
   if (streams.length === 0) return null;
-  // Pick lowest bandwidth variant to keep response size small
-  streams.sort((a, b) => a.bandwidth - b.bandwidth);
+  // Pick highest bandwidth variant for best quality/speed on fast connections
+  streams.sort((a, b) => b.bandwidth - a.bandwidth);
   return streams[0].url;
 }
 
@@ -149,19 +149,41 @@ router.get("/stream/video.mp4", async (req, res) => {
       const MAX_SEGMENTS = 38;
       const toStream = segments.slice(0, MAX_SEGMENTS);
 
-      for (const segUrl of toStream) {
+      // Prefetch PREFETCH_AHEAD segments concurrently while writing in order
+      const PREFETCH_AHEAD = 4;
+      type SegBuf = { data: Buffer[]; error?: unknown };
+      const prefetched = new Map<number, Promise<SegBuf>>();
+
+      function prefetch(idx: number) {
+        if (idx >= toStream.length || prefetched.has(idx)) return;
+        prefetched.set(
+          idx,
+          fetchUrl(toStream[idx], extraHeaders).then(
+            (segRes) =>
+              new Promise<SegBuf>((resolve) => {
+                const chunks: Buffer[] = [];
+                segRes.on("data", (c: Buffer) => chunks.push(c));
+                segRes.on("end", () => resolve({ data: chunks }));
+                segRes.on("error", (e) => resolve({ data: [], error: e }));
+              })
+          ).catch((e) => ({ data: [] as Buffer[], error: e }))
+        );
+      }
+
+      // Kick off initial prefetch window
+      for (let i = 0; i < Math.min(PREFETCH_AHEAD, toStream.length); i++) {
+        prefetch(i);
+      }
+
+      for (let i = 0; i < toStream.length; i++) {
         if (res.destroyed) break;
-        try {
-          const segRes = await fetchUrl(segUrl, extraHeaders);
-          await new Promise<void>((resolve, reject) => {
-            segRes.on("data", (chunk: Buffer) => {
-              if (!res.destroyed) res.write(chunk);
-            });
-            segRes.on("end", resolve);
-            segRes.on("error", reject);
-          });
-        } catch {
-          // skip failed segment
+        prefetch(i + PREFETCH_AHEAD); // advance window
+        const seg = await prefetched.get(i)!;
+        prefetched.delete(i);
+        if (!seg.error) {
+          for (const chunk of seg.data) {
+            if (!res.destroyed) res.write(chunk);
+          }
         }
       }
       res.end();
