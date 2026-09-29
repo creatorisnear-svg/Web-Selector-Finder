@@ -235,8 +235,9 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 .vp-vid-status {
   position: absolute; inset: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: .75rem; color: var(--muted);
+  pointer-events: none;
 }
-.vp-vid-status a { color: var(--accent); }
+.vp-vid-status a { color: var(--accent); pointer-events: auto; }
 .spinner { width: 34px; height: 34px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .vp-info { padding: .85rem 1rem; border-bottom: 1px solid var(--border); }
@@ -767,6 +768,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
         '<div class="card-meta">' + badgeHtml(r.source) + '</div>' +
       '</div>';
     card.addEventListener('click', function() { openVideoPage(r); });
+    prefetchOnHover(card, r.url);
     return card;
   }
 
@@ -869,6 +871,61 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   var vpActors = document.getElementById('vp-actors');
   var vpDesc   = document.getElementById('vp-desc');
 
+  /* ── Video loading ───────────────────────────────────────────────────────── */
+  // Bumped on every open/close so a slow response can't load into the wrong page.
+  var loadSeq = 0;
+  var vidSrcPage = '';
+  var PLAY_URL_TTL = 5 * 60 * 1000;
+  var playUrlCache = new Map();
+
+  function resolvePlayUrl(url) {
+    var hit = playUrlCache.get(url);
+    if (hit && Date.now() - hit.t < PLAY_URL_TTL) return hit.p;
+    var p = fetch('/api/play-url?url=' + encodeURIComponent(url))
+      .then(function(res) { return res.json(); });
+    var entry = { t: Date.now(), p: p };
+    playUrlCache.set(url, entry);
+    function drop() { if (playUrlCache.get(url) === entry) playUrlCache.delete(url); }
+    p.then(function(d) { if (!d.playUrl) drop(); }, drop);
+    return p;
+  }
+
+  function prefetchOnHover(el, url) {
+    var timer = null;
+    el.addEventListener('mouseenter', function() {
+      timer = setTimeout(function() { resolvePlayUrl(url); }, 150);
+    });
+    el.addEventListener('mouseleave', function() { clearTimeout(timer); });
+  }
+
+  function showBuffering() {
+    vpVidStatus.innerHTML = '<div class="spinner"></div><span>Buffering…</span>';
+    vpVidStatus.style.display = 'flex';
+  }
+
+  function playStream(playUrl, pageUrl) {
+    vidSrcPage = pageUrl;
+    showBuffering();
+    vpVid.src = playUrl;
+    vpVid.style.display = 'block';
+    vpVid.play().catch(function() {});
+  }
+
+  function hideVidStatus() {
+    if (vpVid.getAttribute('src')) vpVidStatus.style.display = 'none';
+  }
+  vpVid.addEventListener('canplay', hideVidStatus);
+  vpVid.addEventListener('playing', hideVidStatus);
+  vpVid.addEventListener('waiting', function() {
+    if (vpVid.getAttribute('src')) showBuffering();
+  });
+  vpVid.addEventListener('error', function() {
+    if (!vpVid.getAttribute('src')) return;
+    vpVid.style.display = 'none';
+    vpVidStatus.innerHTML = '<span>Video failed to load. <a href="' + esc(vidSrcPage) + '" target="_blank" rel="noopener">Open source page</a></span>';
+    vpVidStatus.style.display = 'flex';
+  });
+
   function openVideoPage(r) {
     currentVideoData = r;
     fonFetching = false;
@@ -903,14 +960,12 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
 
     buildFindOnChips(r.source);
 
-    fetch('/api/play-url?url=' + encodeURIComponent(r.url))
-      .then(function(res) { return res.json(); })
+    var seq = ++loadSeq;
+    resolvePlayUrl(r.url)
       .then(function(data) {
+        if (seq !== loadSeq) return;
         if (data.playUrl) {
-          vpVid.src = data.playUrl;
-          vpVid.style.display = 'block';
-          vpVidStatus.style.display = 'none';
-          vpVid.play().catch(function() {});
+          playStream(data.playUrl, r.url);
           if (data.description) {
             vpDesc.textContent = data.description;
             vpDesc.style.display = 'block';
@@ -920,6 +975,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
         }
       })
       .catch(function() {
+        if (seq !== loadSeq) return;
         vpVidStatus.innerHTML = '<span>Failed to load. <a href="' + esc(r.url) + '" target="_blank" rel="noopener">Open source page</a></span>';
       });
 
@@ -1095,6 +1151,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
   function findOnSite(src, label) {
     if (fonFetching || !currentVideoData) return;
     fonFetching = true;
+    var startSeq = loadSeq;
 
     // Show original thumbnail reference immediately
     var origThumbProxied = currentVideoData.thumbnail ? thumbUrl(currentVideoData.thumbnail) : null;
@@ -1132,7 +1189,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
         if (!candidates.length || !origThumbProxied) {
           // No thumbnails — pick by title similarity
           titledScored.sort(function(a, b) { return b.titleSim - a.titleSim; });
-          pickAndPlay(titledScored[0].r, null, src, label);
+          pickAndPlay(titledScored[0].r, null, src, label, startSeq);
           return;
         }
 
@@ -1155,7 +1212,7 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
           var best = all[0];
           // Report the thumbnail score if we have one, else report title similarity
           var displayScore = best.thumbScore !== null ? best.thumbScore : null;
-          pickAndPlay(best.r, displayScore, src, label);
+          pickAndPlay(best.r, displayScore, src, label, startSeq);
         });
       })
       .catch(function() {
@@ -1165,7 +1222,8 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
       });
   }
 
-  function pickAndPlay(best, score, src, label) {
+  function pickAndPlay(best, score, src, label, startSeq) {
+    if (startSeq !== loadSeq) return;
     // Show found thumbnail + similarity badge
     if (best.thumbnail) {
       vpFonThumbFound.src = thumbUrl(best.thumbnail);
@@ -1205,20 +1263,19 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
     vpVidStatus.style.display = 'flex';
     vpVidStatus.innerHTML = '<div class="spinner"></div><span>Loading from ' + esc(label) + '\u2026</span>';
 
-    fetch('/api/play-url?url=' + encodeURIComponent(best.url))
-      .then(function(res) { return res.json(); })
+    var seq = ++loadSeq;
+    resolvePlayUrl(best.url)
       .then(function(d) {
+        if (seq !== loadSeq) return;
         fonFetching = false;
         if (d.playUrl) {
-          vpVid.src = d.playUrl;
-          vpVid.style.display = 'block';
-          vpVidStatus.style.display = 'none';
-          vpVid.play().catch(function() {});
+          playStream(d.playUrl, best.url);
         } else {
           vpVidStatus.innerHTML = '<span>Could not play from ' + esc(label) + '. <a href="' + esc(best.url) + '" target="_blank" rel="noopener">Open page</a></span>';
         }
       })
       .catch(function() {
+        if (seq !== loadSeq) return;
         fonFetching = false;
         vpVidStatus.innerHTML = '<span>Failed to load from ' + esc(label) + '.</span>';
       });
@@ -1264,10 +1321,12 @@ header h1 { font-size: .95rem; font-weight: 700; color: var(--accent); letter-sp
       vpVid.pause();
       openVideoPage(r);
     });
+    prefetchOnHover(wrap, r.url);
     return wrap;
   }
 
   function closeVideoPage() {
+    loadSeq++;
     vpOverlay.classList.remove('open');
     document.body.style.overflow = '';
     vpVid.pause();

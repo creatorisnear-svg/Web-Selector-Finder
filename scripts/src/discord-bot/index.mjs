@@ -122,6 +122,39 @@ function fetchUpstream(raw, extra = {}, depth = 0) {
   });
 }
 
+// Given a master playlist, ffmpeg downloads a segment from every variant while
+// probing, which delays the first byte. Hand it the one variant it would pick anyway.
+async function pickHlsVariant(raw, extra) {
+  try {
+    const text = await Promise.race([
+      fetchUpstream(raw, extra).then(upRes => new Promise((resolve, reject) => {
+        if (upRes.statusCode >= 400) { upRes.resume(); resolve(''); return; }
+        let body = '';
+        upRes.setEncoding('utf8');
+        upRes.on('data', c => { body += c; });
+        upRes.on('end', () => resolve(body));
+        upRes.on('error', reject);
+      })),
+      new Promise(resolve => setTimeout(() => resolve(''), 5000)),
+    ]);
+    const lines = text.split('\n').map(l => l.trim());
+    let best = null;
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].startsWith('#EXT-X-STREAM-INF')) continue;
+      const next = lines[i + 1] || '';
+      if (!next || next.startsWith('#')) continue;
+      const height = parseInt((lines[i].match(/RESOLUTION=\d+x(\d+)/) || [])[1] || '0', 10);
+      const bandwidth = parseInt((lines[i].match(/BANDWIDTH=(\d+)/) || [])[1] || '0', 10);
+      if (!best || height > best.height || (height === best.height && bandwidth > best.bandwidth)) {
+        best = { height, bandwidth, url: new URL(next, raw).href };
+      }
+    }
+    return best ? best.url : raw;
+  } catch {
+    return raw;
+  }
+}
+
 async function handleStreamProxy(req, res) {
   const reqUrl = new URL(req.url, 'http://localhost');
   const raw = reqUrl.searchParams.get('url');
@@ -162,6 +195,8 @@ async function handleStreamProxy(req, res) {
   const isHls = raw.includes('.m3u8') || raw.includes('/hls');
 
   if (isHls) {
+    const input = await pickHlsVariant(raw, extra);
+    if (req.socket.destroyed) return;
     res.writeHead(200, {
       'Content-Type': 'video/mp4',
       'Content-Disposition': 'inline; filename="video.mp4"',
@@ -175,7 +210,7 @@ async function handleStreamProxy(req, res) {
     ].filter(Boolean).join('\r\n') + '\r\n';
     const ff = spawn('ffmpeg', [
       '-headers', ffHeaders,
-      '-i', raw,
+      '-i', input,
       '-c:v', 'copy',
       '-c:a', 'copy',
       '-bsf:a', 'aac_adtstoasc',
@@ -244,6 +279,8 @@ async function handleVideoStream(req, res) {
   const isHls = raw.includes('.m3u8') || raw.includes('/hls');
 
   if (isHls) {
+    const input = await pickHlsVariant(raw, extra);
+    if (req.socket.destroyed) return;
     res.writeHead(200, {
       'Content-Type': 'video/mp4',
       'Content-Disposition': 'inline; filename="video.mp4"',
@@ -257,7 +294,7 @@ async function handleVideoStream(req, res) {
     ].filter(Boolean).join('\r\n') + '\r\n';
     const ff = spawn('ffmpeg', [
       '-headers', ffHeaders,
-      '-i', raw,
+      '-i', input,
       '-c:v', 'copy',
       '-c:a', 'copy',
       '-bsf:a', 'aac_adtstoasc',
