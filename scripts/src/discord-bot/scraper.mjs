@@ -53,7 +53,9 @@ async function searchPornhub(query, page = 0) {
   // PH API uses 1-indexed pages, so page 0 → page=1, page 1 → page=2, etc.
   try {
     const phPage = page + 1;
-    const apiUrl = `https://www.pornhub.com/webmasters/search?search_term=${encodeURIComponent(query)}&page=${phPage}&per_page=30&ordering=mostviewed&period=alltime`;
+    // The API's query parameter is `search`; `search_term` is silently ignored
+    // and returns the same all-time most viewed list for every query.
+    const apiUrl = `https://www.pornhub.com/webmasters/search?search=${encodeURIComponent(query)}&page=${phPage}&per_page=30&ordering=mostviewed&period=alltime`;
     logger.info(`PH API: search ${redact(query)} p${phPage}`);
     const res = await axios.get(apiUrl, {
       headers: { 'Accept': 'application/json', 'User-Agent': HEADERS['User-Agent'] },
