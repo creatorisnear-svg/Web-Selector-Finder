@@ -85,8 +85,8 @@ function parseMasterPlaylist(text: string, baseUrl: string): string | null {
     }
   }
   if (streams.length === 0) return null;
-  // Pick highest bandwidth variant for best quality/speed on fast connections
-  streams.sort((a, b) => b.bandwidth - a.bandwidth);
+  // Pick lowest bandwidth variant to keep response size small
+  streams.sort((a, b) => a.bandwidth - b.bandwidth);
   return streams[0].url;
 }
 
