@@ -54,7 +54,7 @@ const PROXY_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.5',
   'Cookie': 'age_verified=1; ageGate=true; confirm=1',
 };
-const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com', 'media.xxbrits.com', 'fpo.xxx', 'freepornvideos.xxx', 'taboodude.com', 'hqporner.com', 'fullporn.xxx', 'tiava.com', 'tiavasex.com'];
+const ALLOWED_HOSTS = ['xvideos-cdn.com', 'xvideos.com', 'pornhub.com', 'phncdn.com', 'xnxx.com', 'xnxx-cdn.com', 'xvideos2.com', 'xxbrits.com', 'media.xxbrits.com', 'fpo.xxx', 'freepornvideos.xxx', 'taboodude.com', 'hqporner.com', 'bigcdn.cc', 'mydaddy.cc', 'fullporn.xxx', 'fullporn.to', 'tiava.com', 'tiavasex.com'];
 const THUMB_HOSTS = [...ALLOWED_HOSTS, 'img.xvideos.com', 'img-cdn.xvideos-cdn.com', 'thumb.xnxx.com', 'img.xnxx-cdn.com', 'img.xxbrits.com', 'cdn.fpo.xxx', 'img.fpo.xxx', 'cdn.freepornvideos.xxx', 'img.freepornvideos.xxx', 'static.freepornvideos.xxx', 'cdn.taboodude.com', 'img.taboodude.com', 'static.taboodude.com', 'cdn.hqporner.com', 'img.hqporner.com', 'thumb.hqporner.com', 'fastporndelivery.hqporner.com', 'cdn.fullporn.xxx', 'img.fullporn.xxx', 'cdn.tiava.com', 'img.tiava.com', 'thumb.tiava.com', 'static.tiavasex.com'];
 
 function isAllowedUrl(raw) {

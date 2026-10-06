@@ -289,7 +289,7 @@ const SOURCE_HOSTS = [
   ['pornhub.com', 'pornhub'], ['xvideos.com', 'xvideos'], ['xvideos2.com', 'xvideos'],
   ['xnxx.com', 'xnxx'], ['xxbrits.com', 'xxbrits'], ['fpo.xxx', 'fpoxxx'],
   ['freepornvideos.xxx', 'freepornvideos'], ['taboodude.com', 'taboodude'],
-  ['hqporner.com', 'hqporner'], ['fullporn.xxx', 'fullporn'],
+  ['hqporner.com', 'hqporner'], ['fullporn.xxx', 'fullporn'], ['fullporn.to', 'fullporn'],
   ['tiava.com', 'tiava'], ['tiavasex.com', 'tiava'],
 ];
 
@@ -617,7 +617,7 @@ async function searchTaboodude(query, page = 0) {
 async function searchHqporner(query, page = 0) {
   const qSlug = query.trim().replace(/\s+/g, '+');
   const pageParam = page > 0 ? `&p=${page + 1}` : '';
-  const searchUrl = `https://www.hqporner.com/?q=${qSlug}${pageParam}`;
+  const searchUrl = `https://hqporner.com/?q=${qSlug}${pageParam}`;
   logger.info(`hqporner search: ${redact(query)} p${page}`);
   try {
     const { data } = await axios.get(searchUrl, {
@@ -625,7 +625,7 @@ async function searchHqporner(query, page = 0) {
         'User-Agent': HEADERS['User-Agent'],
         'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Referer': 'https://www.hqporner.com/',
+        'Referer': 'https://hqporner.com/',
         'Cookie': 'age_verified=1',
       },
       timeout: 15000,
@@ -643,7 +643,7 @@ async function searchHqporner(query, page = 0) {
       if (!rawUrl || seen.has(rawUrl)) return;
       if (rawUrl === '/' || rawUrl.length < 5) return;
       seen.add(rawUrl);
-      const url = rawUrl.startsWith('http') ? rawUrl : `https://www.hqporner.com${rawUrl}`;
+      const url = rawUrl.startsWith('http') ? rawUrl : `https://hqporner.com${rawUrl}`;
 
       // Title: prefer the h3 link text
       const title = (
@@ -674,7 +674,7 @@ async function searchHqporner(query, page = 0) {
         const href = $(el).attr('href') || '';
         if (!href || seen.has(href) || !/\/hdporn\/\d/.test(href)) return;
         seen.add(href);
-        const url = href.startsWith('http') ? href : `https://www.hqporner.com${href}`;
+        const url = href.startsWith('http') ? href : `https://hqporner.com${href}`;
         const title = ($(el).attr('title') || $(el).find('img').attr('alt') || $(el).text())
           .replace(/\s+/g, ' ').trim();
         if (!title || title.length < 4) return;
@@ -1258,6 +1258,26 @@ export async function getVideoStreamUrl(videoPageUrl) {
     const hlsUrl = unescapeUrl(xvHlsMatch[1]);
     logger.info(`Found xvideos HLS URL: ${redactUrl(hlsUrl)}`);
     return { url: hlsUrl, isHls: true, cookies: sessionCookies, description };
+  }
+
+  // 5c. hqporner embeds its player in a mydaddy.cc iframe whose page lists the
+  // <source> mp4s (360/720/1080). Fetch it with the site as Referer.
+  const hqFrame = $('iframe[src*="mydaddy.cc"]').attr('src');
+  if (hqFrame) {
+    try {
+      const frameUrl = resolveUrl(hqFrame, videoPageUrl);
+      const { data: frameHtml } = await axios.get(frameUrl, {
+        headers: { ...HEADERS, Referer: videoPageUrl }, timeout: 15000,
+      });
+      const srcs = [...String(frameHtml).matchAll(/<source[^>]+src=\\?["']([^"'\\]+\.mp4)/gi)].map(m => resolveUrl(m[1], frameUrl));
+      const pick = srcs.find(u => /\/720\.mp4/.test(u)) || srcs.find(u => /\/360\.mp4/.test(u)) || srcs[0];
+      if (pick) {
+        logger.info(`Found hqporner iframe mp4: ${redactUrl(pick)}`);
+        return { url: pick, isHls: false, cookies: sessionCookies, description, referer: frameUrl };
+      }
+    } catch (e) {
+      logger.warn(`hqporner iframe fetch failed: ${e.message}`);
+    }
   }
 
   // 6. Plain .mp4 URLs in scripts
